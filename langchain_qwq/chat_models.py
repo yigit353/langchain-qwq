@@ -36,6 +36,9 @@ _BM = TypeVar("_BM", bound=BaseModel)
 _DictOrPydanticClass = Union[Dict[str, Any], Type[_BM], Type]
 _DictOrPydantic = Union[Dict, _BM]
 
+# Store the original __add__ method
+original_add = AIMessageChunk.__add__
+
 
 class ChatQwQ(BaseChatOpenAI):
     """Qwen QwQ Thinking chat model integration to access models hosted in Qwen QwQ Thinking's API.
@@ -265,9 +268,6 @@ class ChatQwQ(BaseChatOpenAI):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         from langchain_core.messages import AIMessageChunk
-
-        # Store the original __add__ method
-        original_add = AIMessageChunk.__add__
 
         # Helper function to check if a tool call is valid
         def is_valid_tool_call(tc: ToolCall) -> bool:
@@ -530,9 +530,6 @@ class ChatQwQ(BaseChatOpenAI):
     ) -> AsyncIterator[ChatGenerationChunk]:
         from langchain_core.messages import AIMessageChunk
 
-        # Store the original __add__ method
-        original_add = AIMessageChunk.__add__
-
         # Helper function to check if a tool call is valid
         def is_valid_tool_call(tc: ToolCall) -> bool:
             # Filter out invalid/incomplete tool calls
@@ -600,9 +597,7 @@ class ChatQwQ(BaseChatOpenAI):
         self,
         schema: Optional[_DictOrPydanticClass] = None,
         *,
-        method: Literal[
-            "function_calling", "json_mode", "json_schema"
-        ] = "function_calling",
+        method: Literal["function_calling", "json_mode", "json_schema"] = "json_mode",
         include_raw: bool = False,
         strict: Optional[bool] = None,
         **kwargs: Any,
@@ -643,6 +638,7 @@ class ChatQwQ(BaseChatOpenAI):
             schema_dict = {}
             schema_name = "CustomOutput"
             output_cls = None
+
         else:
             # Extract schema information using convert_to_json_schema
             try:
@@ -673,6 +669,45 @@ class ChatQwQ(BaseChatOpenAI):
                     output_cls = None
                 else:
                     raise ValueError(f"Unsupported schema type: {type(schema)}")
+
+            if method == "function_calling":
+                from operator import itemgetter
+
+                from langchain_core.output_parsers import (
+                    JsonOutputKeyToolsParser,
+                    PydanticToolsParser,
+                )
+                from langchain_core.output_parsers.base import OutputParserLike
+                from langchain_core.runnables import RunnableMap, RunnablePassthrough
+                from langchain_core.utils.function_calling import convert_to_openai_tool
+
+                is_pydantic_schema = isinstance(schema, type) and is_basemodel_subclass(
+                    schema
+                )
+                llm = self.bind_tools([schema])
+                if is_pydantic_schema:
+                    output_parser: OutputParserLike = PydanticToolsParser(
+                        tools=[schema],  # type: ignore[list-item]
+                        first_tool_only=True,
+                    )
+                else:
+                    key_name = convert_to_openai_tool(schema)["function"]["name"]
+                    output_parser = JsonOutputKeyToolsParser(
+                        key_name=key_name, first_tool_only=True
+                    )
+
+                if include_raw:
+                    parser_assign = RunnablePassthrough.assign(
+                        parsed=itemgetter("raw") | output_parser,
+                        parsing_error=lambda _: None,
+                    )
+                    parser_none = RunnablePassthrough.assign(parsed=lambda _: None)
+                    parser_with_fallback = parser_assign.with_fallbacks(
+                        [parser_none], exception_key="parsing_error"
+                    )
+                    return RunnableMap(raw=llm) | parser_with_fallback
+                else:
+                    return llm | output_parser
 
         # Create a custom output parser
         class StructuredOutputParser(BaseOutputParser[Any]):
@@ -801,7 +836,18 @@ class ChatQwQ(BaseChatOpenAI):
                 except Exception as e:
                     return {"raw": raw_output, "parsed": None, "parsing_error": e}
 
-            chain = RunnableLambda(process_with_raw)
+            async def aprocess_with_raw(x: Any) -> Dict[str, Any]:
+                raw_output = await structured_model.ainvoke(prepare_messages(x))
+                try:
+                    if isinstance(raw_output.content, str):
+                        parsed = output_parser.parse(raw_output.content)
+                    else:
+                        parsed = raw_output.content
+                    return {"raw": raw_output, "parsed": parsed, "parsing_error": None}
+                except Exception as e:
+                    return {"raw": raw_output, "parsed": None, "parsing_error": e}
+
+            chain = RunnableLambda(process_with_raw, afunc=aprocess_with_raw)
         else:
             # Only return parsed output
             def process_without_raw(x: Any) -> Any:
@@ -811,7 +857,14 @@ class ChatQwQ(BaseChatOpenAI):
                 else:
                     return raw_output.content
 
-            chain = RunnableLambda(process_without_raw)
+            async def aprocess_without_raw(x: Any) -> Any:
+                raw_output = await structured_model.ainvoke(prepare_messages(x))
+                if isinstance(raw_output.content, str):
+                    return output_parser.parse(raw_output.content)
+                else:
+                    return raw_output.content
+
+            chain = RunnableLambda(process_without_raw, afunc=aprocess_without_raw)
 
         return chain
 

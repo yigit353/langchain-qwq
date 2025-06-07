@@ -25,6 +25,11 @@ codespell = ["codespell"]
 lint = ["ruff"]
 typing = ["mypy"]
 
+[[tool.poetry.source]]
+name = "mirrors"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+priority = "primary"
+
 [tool.mypy]
 disallow_untyped_defs = "True"
 
