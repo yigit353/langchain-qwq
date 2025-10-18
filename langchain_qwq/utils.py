@@ -60,12 +60,3 @@ async def aconvert_reasoning_to_content(
             chunk.content = f"{think_tag[1]}{chunk.content}"
             isend = False
         yield chunk
-
-
-
-
-
-
-
-    
-    

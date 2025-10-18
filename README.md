@@ -1,17 +1,17 @@
 # langchain-qwq
 
-This package provides seamless integration between LangChain and QwQ models as well as other Qwen series models from Alibaba Cloud BaiLian (via OpenAI-compatible API), with additional optimizations specifically designed for Qwen3 models.
+This package provides seamless integration between LangChain and QwQ models as well as other Qwen series models from Alibaba Cloud BaiLian (via OpenAI-compatible API).
 
 ## Features
 
-- **QwQ Model Integration**: Full support for QwQ models with advanced reasoning capabilities  
-- **Qwen3 Model Integration**: Comprehensive support for Qwen3 series models with hybrid reasoning modes  
-- **Other Qwen Models**: Compatibility with Qwen-Max, Qwen2.5, and other Qwen series models  
-- **Vision Models**: Native support for Qwen-VL series vision models  
-- **Streaming Support**: Synchronous and asynchronous streaming capabilities  
-- **Tool Calling**: Function calling with support for parallel execution  
-- **Structured Output**: JSON mode and function calling for structured response generation  
-- **Reasoning Access**: Direct access to internal model reasoning and thinking content  
+- **QwQ Model Integration**: Full support for QwQ models with advanced reasoning capabilities
+- **Qwen3 Model Integration**: Comprehensive support for Qwen3 series models with hybrid reasoning modes
+- **Other Qwen Models**: Compatibility with Qwen-Max, Qwen2.5, and other Qwen series models
+- **Vision Models**: Native support for Qwen-VL series vision models
+- **Streaming Support**: Synchronous and asynchronous streaming capabilities
+- **Tool Calling**: Function calling with support for parallel execution
+- **Structured Output**: JSON mode and function calling for structured response generation
+- **Reasoning Access**: Direct access to internal model reasoning and thinking content
 
 ## Installation
 
@@ -31,12 +31,11 @@ pip install -U langchain-qwq[lint]
 pip install -U langchain-qwq[typing]
 ```
 
-
 ## Environment Variables
 
 Authentication and configuration are managed through the following environment variables:
 
-- `DASHSCOPE_API_KEY`: Your DashScope API key (required)  
+- `DASHSCOPE_API_KEY`: Your DashScope API key (required)
 - `DASHSCOPE_API_BASE`: Optional API base URL (defaults to `"https://dashscope-intl.aliyuncs.com/compatible-mode/v1"`)
 
 > **Note**: Domestic Chinese users should configure `DASHSCOPE_API_BASE` to the domestic endpoint, as `langchain-qwq` defaults to the international Alibaba Cloud endpoint.
@@ -81,7 +80,7 @@ for msg in model.stream("Hello"):
     if hasattr(msg, 'additional_kwargs') and "reasoning_content" in msg.additional_kwargs:
         if is_first:
             print("Starting to think...")
-            is_first = False   
+            is_first = False
         print(msg.additional_kwargs["reasoning_content"], end="", flush=True)
     elif hasattr(msg, 'content') and msg.content:
         if is_end:
@@ -103,38 +102,21 @@ async for msg in model.astream("Hello"):
             is_first = False
         print(msg.additional_kwargs["reasoning_content"], end="", flush=True)
     elif hasattr(msg, 'content') and msg.content:
-        if is_end:   
+        if is_end:
             print("\nThinking ended")
             is_end = False
         print(msg.content, end="", flush=True)
 ```
 
-### Convenient Reasoning Display
+### Using Content Blocks
 
-Use built-in utilities to simplify reasoning content display:
-
-```python
-from langchain_qwq.utils import convert_reasoning_to_content
-
-# Sync
-for msg in convert_reasoning_to_content(model.stream("Hello")):
-    print(msg.content, end="", flush=True)
-
-# Async
-from langchain_qwq.utils import aconvert_reasoning_to_content
-
-async for msg in aconvert_reasoning_to_content(model.astream("Hello")):
-    print(msg.content, end="", flush=True)
-```
-
-Customize think tags:
+ChatQwQ also supports v1 version content_blocks, for example
 
 ```python
-async for msg in aconvert_reasoning_to_content(
-    model.astream("Hello"), 
-    think_tag=("<Start>", "<End>")
-):
-    print(msg.content, end="", flush=True)
+from langchain_qwq import ChatQwen, ChatQwQ
+model = ChatQwQ(model="qwq-plus")
+print(model.invoke("Hello").content_blocks)
+
 ```
 
 ### Tool Calling
@@ -151,7 +133,6 @@ bound_model = model.bind_tools([get_weather])
 response = bound_model.invoke("What's the weather in New York?")
 print(response.tool_calls)
 ```
-
 
 ### Structured Output
 
@@ -180,49 +161,45 @@ print(response)  # User(name='Alice', age=30)
 ### Integration with LangChain Agents
 
 ```python
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import tool
+from langchain_qwq import ChatQwen, ChatQwQ
 
-agent = create_tool_calling_agent(
-    model,
-    [get_weather],
-    prompt=ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful assistant"),
-        ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
-)
 
-agent_executor = AgentExecutor(agent=agent, tools=[get_weather])
-result = agent_executor.invoke({"input": "What's the weather in Beijing?"})
-print(result)
+@tool
+def get_weather(city: str) -> str:
+    """Get the weather in a city."""
+    return f"The weather in {city} is sunny."
+
+
+model = ChatQwQ(model="qwq-plus")
+agent = create_agent(model, tools=[get_weather])
+print(agent.invoke({"messages": [HumanMessage("What is the weather like in New York?")]}))
 ```
 
 ### QvQ Model Example
 
 ```python
 from langchain_core.messages import HumanMessage
-from langchain_qwq.chat_models import ChatQwQ
-
-model = ChatQwQ(model="qvq-max")
 
 messages = [
     HumanMessage(
-        content=[
+        content_blocks=[
             {
-                "type": "image_url",
-                "image_url": {
-                    "url": "http://example.com/image.png"
-                },
+                "type": "image",
+                "url": "https://www.example.com/image.jpg",
             },
-            {"type": "text", "text": "What do you see in this image?"},
+            {"type": "text", "text": "describe the image"},
         ]
     )
 ]
 
-response = model.invoke(messages)
-print(response)
+
+# model = ChatQwen(model="qwen-plus-latest")
+model = ChatQwQ(model="qvq-plus")
+print(model.invoke(messages))
+
 ```
 
 ## ChatQwen
@@ -281,7 +258,7 @@ print(f"Limited reasoning: {reasoning}")
 
 ### Other Qwen Models
 
-#### Qwen2.5-Max
+#### Qwen-Max
 
 ```python
 model = ChatQwen(model="qwen-max-latest")
@@ -309,44 +286,75 @@ bound_model = model.bind_tools([get_weather])
 struct_model = model.with_structured_output(User, method="json_mode")
 ```
 
+### Using Content Blocks
+
+ChatQwen supports content blocks, for example
+
+```python
+from langchain_qwq import ChatQwen
+
+model = ChatQwen(model="qwen-plus-latest",enable_thinking=True)
+print(model.invoke("Hello").content_blocks)
+```
+
+### Integration with LangChain Agents
+
+```python
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import tool
+from langchain_qwq import ChatQwen
+
+
+@tool
+def get_weather(city: str) -> str:
+    """Get the weather in a city."""
+    return f"The weather in {city} is sunny."
+
+
+model = ChatQwen(model="qwen-plus-latest")
+agent = create_agent(model, tools=[get_weather])
+print(agent.invoke({"messages": [HumanMessage("查询New York的天气")]}))
+```
+
 ### Vision Models
 
 ```python
 from langchain_core.messages import HumanMessage
+from langchain_qwq import ChatQwen
 
-model = ChatQwen(model="qwen-vl-max-latest")
 
 messages = [
-    HumanMessage(content=[
-        {
-            "type": "image_url",
-            "image_url": {
-                "url": "https://example.com/image.jpg"
+    HumanMessage(
+        content_blocks=[
+            {
+                "type": "image",
+                "url": "https://www.example.com/image.jpg",
             },
-        },
-        {"type": "text", "text": "What do you see in this image?"},
-    ])
+            {"type": "text", "text": "描述图片内容"},
+        ]
+    )
 ]
 
-response = model.invoke(messages)
-print(response.content)
-```
 
+model = ChatQwen(model="qwen3-vl-plus")
+print(model.invoke(messages))
+```
 
 ## Model Comparison
 
-| Feature              | ChatQwQ            | ChatQwen           |
-|----------------------|--------------------|---------------------|
-| QwQ Models           | ✅ Primary          | ❌                  |
-| QvQ Models           | ✅ Primary          | ❌                  |
-| Qwen3 Models         | ✅ Basic            | ✅ Enhanced          |
-| Other Qwen Models    | ❌                 | ✅ Full Support      |
-| Vision Models        | ❌                 | ✅ Supported         |
-| Thinking Control     | ❌                 | ✅ (Qwen3 only)      |
-| Thinking Budget      | ❌                 | ✅ (Qwen3 only)      |
+| Feature           | ChatQwQ    | ChatQwen        |
+| ----------------- | ---------- | --------------- |
+| QwQ Models        | ✅ Primary | ❌              |
+| QvQ Models        | ✅ Primary | ❌              |
+| Qwen3 Models      | ✅ Basic   | ✅ Enhanced     |
+| Other Qwen Models | ❌         | ✅ Full Support |
+| Vision Models     | ❌         | ✅ Supported    |
+| Thinking Control  | ❌         | ✅ (Qwen3 only) |
+| Thinking Budget   | ❌         | ✅ (Qwen3 only) |
 
 ### Usage Guidance
 
-- Use ChatQwQ for QwQ and QvQ models.  
-- For Qwen3 series models (available only on Alibaba Cloud BAILIAN platform) with deep thinking mode enabled, all invocations will automatically use streaming.  
-- For other Qwen series models (including self-deployed or third-party deployed Qwen3 models), use ChatQwen, and streaming will not be automatically enabled.  
+- Use ChatQwQ for QwQ and QvQ models.
+- For Qwen3 series models (available only on Alibaba Cloud BAILIAN platform) with deep thinking mode enabled, all invocations will automatically use streaming.
+- For other Qwen series models (including self-deployed or third-party deployed Qwen3 models), use ChatQwen, and streaming will not be automatically enabled.

@@ -141,7 +141,7 @@ class ChatQwQ(_BaseChatQwen):
 
     def _check_need_stream(self) -> bool:
         return True
-    
+
     def _support_tool_choice(self) -> bool:
         return False
 
@@ -913,10 +913,9 @@ class ChatQwen(_BaseChatQwen):
         thinking_model = self._is_thinking_model()
         if thinking_model:
             if "thinking" not in self.model_name:
-                self.enable_thinking=False
+                self.enable_thinking = False
             else:
-                method="function_calling"
-
+                method = "function_calling"
         return super().with_structured_output(
             schema=schema,
             method=method,

@@ -1,10 +1,24 @@
-from typing import Any, Dict, List, Literal, Optional, Self, Type, TypeVar, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Self,
+    Sequence,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 import openai
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatResult
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 from langchain_core.utils import from_env, secret_from_env
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -78,7 +92,7 @@ class _BaseChatQwen(BaseChatOpenAI):
                 **async_specific,
             )
             self.async_client = self.root_async_client.chat.completions
-        self.streaming = self._is_thinking_model()
+        self.streaming = self._check_need_stream()
         return self
 
     def _create_chat_result(
@@ -104,8 +118,35 @@ class _BaseChatQwen(BaseChatOpenAI):
                 rtn.generations[0].message.additional_kwargs["reasoning_content"] = (
                     reasoning
                 )
+        if rtn.llm_output and rtn.llm_output.get("model_provider") == "openai":
+            # Remove model_provider=openai from dict to ensure default content_blocks parsing is used instead of openai's.
+            rtn.llm_output.pop("model_provider", None)
 
         return rtn
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict,
+        default_chunk_class: type,
+        base_generation_info: Optional[dict],
+    ) -> Optional[ChatGenerationChunk]:
+        generation_chunk = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        if not generation_chunk:
+            return generation_chunk
+
+        message_chunk = generation_chunk.message
+        if (
+            message_chunk.response_metadata
+            and message_chunk.response_metadata.get("model_provider") == "openai"
+        ):
+            # Remove model_provider=openai from dict to ensure default content_blocks parsing is used instead of openai's.
+            message_chunk.response_metadata.pop("model_provider", None)
+        return ChatGenerationChunk(
+            message=message_chunk,
+            generation_info=generation_chunk.generation_info,
+        )
 
     def _get_request_payload(
         self,
@@ -117,10 +158,58 @@ class _BaseChatQwen(BaseChatOpenAI):
         payload = self._filter_disabled_params(
             **super()._get_request_payload(input_, stop=stop, **kwargs)
         )
-        if "parallel_tool_calls" not in payload and "tools" in payload:
-            payload["parallel_tool_calls"] = True
 
         return payload
+
+    def bind_tools(
+        self,
+        tools: Sequence[Union[dict[str, Any], type, Callable, BaseTool]],
+        *,
+        tool_choice: Optional[Union[dict, str, Literal["auto", "none"], bool]] = None,
+        strict: Optional[bool] = None,
+        parallel_tool_calls: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, BaseMessage]:
+        """Bind tool-like objects to this chat model.
+
+        Assumes model is compatible with OpenAI tool-calling API.
+
+        Args:
+            tools: A list of tool definitions to bind to this chat model.
+                Supports any tool definition handled by
+                :meth:`langchain_core.utils.function_calling.convert_to_openai_tool`.
+            tool_choice: Which tool to require the model to call. Options are:
+                - str of the form ``"<<tool_name>>"``: calls <<tool_name>> tool.
+                - ``"auto"``: automatically selects a tool (including no tool).
+                - ``"none"``: does not call a tool.
+                - dict of the form ``{"type": "function", "function": {"name": <<tool_name>>}}``: calls <<tool_name>> tool.
+                - ``False`` or ``None``: no effect, default OpenAI behavior.
+            strict: If True, model output is guaranteed to exactly match the JSON Schema
+                provided in the tool definition. If True, the input schema will be
+                validated according to
+                https://platform.openai.com/docs/guides/structured-outputs/supported-schemas.
+                If False, input schema will not be validated and model output will not
+                be validated.
+                If None, ``strict`` argument will not be passed to the model.
+            parallel_tool_calls: Set to ``False`` to disable parallel tool use.
+                Defaults to ``None`` (no specification, which allows parallel tool use).
+            kwargs: Any additional parameters are passed directly to
+                :meth:`~langchain_openai.chat_models.base.ChatOpenAI.bind`.
+
+        .. versionchanged:: 0.1.21
+
+            Support for ``strict`` argument added.
+
+        """  # noqa: E501
+
+        if parallel_tool_calls is None:
+            kwargs["parallel_tool_calls"] = True
+
+        if tool_choice:
+            if tool_choice == "required" or tool_choice == "any":
+                tool_choice = "auto"
+            kwargs["tool_choice"] = tool_choice
+        return super().bind_tools(tools, **kwargs)
 
     def with_structured_output(
         self,
@@ -174,7 +263,7 @@ class _BaseChatQwen(BaseChatOpenAI):
             tool_name = convert_to_openai_tool(schema)["function"]["name"]
 
             tool_choice = self._support_tool_choice()
-            
+
             if tool_choice:
                 bind_kwargs = self._filter_disabled_params(
                     parallel_tool_calls=False,
@@ -198,7 +287,7 @@ class _BaseChatQwen(BaseChatOpenAI):
             llm = self.bind_tools([schema], **bind_kwargs)
 
             output_parser = (
-                PydanticToolsParser(tools=[schema], first_tool_only=True)
+                PydanticToolsParser(tools=[schema], first_tool_only=True)  # type: ignore
                 if is_pydantic_schema
                 else JsonOutputKeyToolsParser(key_name=tool_name, first_tool_only=True)
             )
