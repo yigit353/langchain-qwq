@@ -92,7 +92,8 @@ class _BaseChatQwen(BaseChatOpenAI):
                 **async_specific,
             )
             self.async_client = self.root_async_client.chat.completions
-        self.streaming = self._check_need_stream()
+        if self._check_need_stream():
+            self.streaming = True
         return self
 
     def _create_chat_result(
