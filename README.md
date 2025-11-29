@@ -31,6 +31,27 @@ pip install -U langchain-qwq[lint]
 pip install -U langchain-qwq[typing]
 ```
 
+### Optional langchain-neo4j integration tests
+
+To keep the core package lightweight, the `langchain-neo4j` dependency is **not** bundled
+with the project. If you still want to continuously verify compatibility, you can run the
+dedicated optional tests locally:
+
+1. Install the extra dependency:
+
+   ```bash
+   pip install langchain-neo4j
+   ```
+
+2. Enable the optional test suite and run it:
+
+   ```bash
+   LANGCHAIN_QWQ_RUN_NEO4J_TESTS=1 pytest tests/integration_tests/test_langchain_neo4j.py
+   ```
+
+The test is skipped automatically in normal CI runs, so it won't add an extra dependency to
+the default test matrix.
+
 ## Environment Variables
 
 Authentication and configuration are managed through the following environment variables:
