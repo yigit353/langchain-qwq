@@ -2,6 +2,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterator,
     List,
     Literal,
     Optional,
@@ -13,11 +14,12 @@ from typing import (
     cast,
 )
 
+import json_repair
 import openai
 from langchain_core.language_models import LanguageModelInput
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolCall
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_core.utils import from_env, secret_from_env
 from langchain_openai.chat_models.base import BaseChatOpenAI
@@ -96,6 +98,98 @@ class _BaseChatQwen(BaseChatOpenAI):
             self.streaming = True
         return self
 
+    def _repair_json_in_message(self, msg: AIMessage) -> None:
+        if msg.invalid_tool_calls:
+            new_tool_calls = []
+            new_invalid_tool_calls = []
+
+            for invalid_tool_call in msg.invalid_tool_calls:
+                args = invalid_tool_call["args"]
+                if args is None:
+                    new_invalid_tool_calls.append(invalid_tool_call)
+                    continue
+
+                try:
+                    # Try to repair JSON
+                    repaired_args = json_repair.loads(args)
+                    # If successful, create valid ToolCall
+                    new_tool_calls.append(
+                        cast(
+                            ToolCall,
+                            {
+                                "name": invalid_tool_call["name"],
+                                "args": repaired_args,
+                                "id": invalid_tool_call["id"],
+                                "type": "tool_call",
+                            },
+                        )
+                    )
+                except Exception:
+                    # If repair fails, keep as invalid
+                    new_invalid_tool_calls.append(invalid_tool_call)
+
+            msg.tool_calls.extend(new_tool_calls)
+            msg.invalid_tool_calls = new_invalid_tool_calls
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        chunks = []
+        for chunk in super()._stream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        ):
+            chunks.append(chunk)
+
+        if not chunks:
+            return
+
+        # Aggregate
+        final_chunk = chunks[0]
+        for chunk in chunks[1:]:
+            final_chunk += chunk
+
+        # Repair
+        if isinstance(final_chunk.message, AIMessage):
+            self._repair_json_in_message(final_chunk.message)
+
+        yield final_chunk
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        chat_result = super()._generate(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+
+        for generation in chat_result.generations:
+            if isinstance(generation.message, AIMessage):
+                self._repair_json_in_message(generation.message)
+
+        return chat_result
+
+    def invoke(
+        self,
+        input: LanguageModelInput,
+        config: Optional[RunnableConfig] = None,
+        *,
+        stop: Optional[list[str]] = None,
+        **kwargs: Any,
+    ) -> AIMessage:
+        result = cast(
+            AIMessage, super().invoke(input, config=config, stop=stop, **kwargs)
+        )
+        if isinstance(result, AIMessage):
+            self._repair_json_in_message(result)
+        return result
+
     def _create_chat_result(
         self,
         response: Union[dict, openai.BaseModel],
@@ -156,9 +250,12 @@ class _BaseChatQwen(BaseChatOpenAI):
         stop: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> dict:
-        payload = self._filter_disabled_params(
-            **super()._get_request_payload(input_, stop=stop, **kwargs)
-        )
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+
+        if "tool_choice" in kwargs and "tool_choice" not in payload:
+            payload["tool_choice"] = kwargs["tool_choice"]
+
+        payload = self._filter_disabled_params(**payload)
 
         return payload
 
@@ -170,7 +267,7 @@ class _BaseChatQwen(BaseChatOpenAI):
         strict: Optional[bool] = None,
         parallel_tool_calls: Optional[bool] = None,
         **kwargs: Any,
-    ) -> Runnable[LanguageModelInput, BaseMessage]:
+    ) -> Runnable[LanguageModelInput, AIMessage]:
         """Bind tool-like objects to this chat model.
 
         Assumes model is compatible with OpenAI tool-calling API.
@@ -210,7 +307,11 @@ class _BaseChatQwen(BaseChatOpenAI):
             if tool_choice == "required" or tool_choice == "any":
                 tool_choice = "auto"
             kwargs["tool_choice"] = tool_choice
-        return super().bind_tools(tools, **kwargs)
+
+        res = super().bind_tools(tools, **kwargs)
+        if tool_choice is not None:
+            return res.bind(tool_choice=tool_choice)
+        return res
 
     def with_structured_output(
         self,
