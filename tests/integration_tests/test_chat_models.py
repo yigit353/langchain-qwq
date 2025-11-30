@@ -63,8 +63,7 @@ class TestChatQwQIntegration(BaseChatQwenIntegrationTests):
             "model": "qwq-plus",
         }
 
-    @pytest.mark.xfail(reason="Custom implementation for QwQ model")
-    def test_stream(self, model: BaseChatModel) -> None:
+    def test_stream_qwq(self, model: BaseChatModel) -> None:
         num_chunks = 0
         full: AIMessageChunk | None = None
         for chunk in model.stream("Hello"):
@@ -82,8 +81,7 @@ class TestChatQwQIntegration(BaseChatQwenIntegrationTests):
         assert full.content_blocks[0]["type"] == "reasoning"  # type: ignore[attr-defined]
         assert full.content_blocks[1]["type"] == "text"  # type: ignore[attr-defined]
 
-    @pytest.mark.xfail(reason="Custom implementation for QwQ model")
-    async def test_astream(self, model: BaseChatModel) -> None:
+    async def test_astream_qwq(self, model: BaseChatModel) -> None:
         num_chunks = 0
         full: AIMessageChunk | None = None
         async for chunk in model.astream("Hello"):

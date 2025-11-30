@@ -261,9 +261,9 @@ class _BaseChatQwen(BaseChatOpenAI):
 
     def bind_tools(
         self,
-        tools: Sequence[Union[dict[str, Any], type, Callable, BaseTool]],
+        tools: Sequence[Union[Dict[str, Any], Type, Callable, BaseTool]],
         *,
-        tool_choice: Optional[Union[dict, str, Literal["auto", "none"], bool]] = None,
+        tool_choice: Optional[Union[Dict, str, Literal["auto", "none"], bool]] = None,
         strict: Optional[bool] = None,
         parallel_tool_calls: Optional[bool] = None,
         **kwargs: Any,
@@ -301,6 +301,7 @@ class _BaseChatQwen(BaseChatOpenAI):
         """  # noqa: E501
 
         if parallel_tool_calls is None:
+            # if kwargs.get("parallel_tool_calls") is None:
             kwargs["parallel_tool_calls"] = True
 
         if tool_choice:
