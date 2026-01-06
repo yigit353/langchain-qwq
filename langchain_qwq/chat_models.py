@@ -1,5 +1,6 @@
 """Integration for QwQ and most Qwen series chat models"""
 
+import json
 from json import JSONDecodeError
 from typing import (
     Any,
@@ -13,7 +14,7 @@ from typing import (
     cast,
 )
 
-import json_repair as json
+import json_repair
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
@@ -310,7 +311,14 @@ class ChatQwQ(_BaseChatQwen):
                 for index in sorted(accumulated_tool_call_chunks.keys()):
                     tc = accumulated_tool_call_chunks[index]
                     try:
-                        args = json.loads(str(tc["args"]))
+                        # Try standard JSON parsing first (secure)
+                        args_str = str(tc["args"])
+                        try:
+                            args = json.loads(args_str)
+                        except (JSONDecodeError, ValueError):
+                            # Fall back to json_repair for malformed JSON from API
+                            args = json_repair.loads(args_str)
+
                         tool_calls.append(
                             {
                                 "name": str(tc["name"]),
@@ -458,7 +466,14 @@ class ChatQwQ(_BaseChatQwen):
                 for index in sorted(accumulated_tool_call_chunks.keys()):
                     tc = accumulated_tool_call_chunks[index]
                     try:
-                        args = json.loads(str(tc["args"]))
+                        # Try standard JSON parsing first (secure)
+                        args_str = str(tc["args"])
+                        try:
+                            args = json.loads(args_str)
+                        except (JSONDecodeError, ValueError):
+                            # Fall back to json_repair for malformed JSON from API
+                            args = json_repair.loads(args_str)
+
                         tool_calls.append(
                             {
                                 "name": str(tc["name"]),
