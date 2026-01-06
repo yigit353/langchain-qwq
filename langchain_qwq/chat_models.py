@@ -299,11 +299,27 @@ class ChatQwQ(_BaseChatQwen):
             for tool_call in tool_calls:
                 # Try standard JSON parsing first (secure)
                 args_str = tool_call["args"]
+                if not args_str or args_str.strip() == "":
+                    # Empty args should be empty dict
+                    tool_call["args"] = {}  # type: ignore
+                    continue
+
                 try:
                     tool_call["args"] = json.loads(args_str)  # type: ignore
-                except (JSONDecodeError, ValueError):
+                except (JSONDecodeError, ValueError) as e:
                     # Fall back to json_repair for malformed JSON from API
-                    tool_call["args"] = json_repair.loads(args_str)  # type: ignore
+                    try:
+                        tool_call["args"] = json_repair.loads(args_str)  # type: ignore
+                    except Exception as repair_error:
+                        # If json_repair also fails, try to provide useful context
+                        raise JSONDecodeError(
+                            f"Failed to parse tool call arguments. "
+                            f"Original error: {e}. "
+                            f"json_repair error: {repair_error}. "
+                            f"Args string: {args_str[:100]}...",
+                            args_str,
+                            0,
+                        ) from repair_error
 
             last_chunk = chunks[-1]
 
@@ -401,11 +417,27 @@ class ChatQwQ(_BaseChatQwen):
             for tool_call in tool_calls:
                 # Try standard JSON parsing first (secure)
                 args_str = tool_call["args"]
+                if not args_str or args_str.strip() == "":
+                    # Empty args should be empty dict
+                    tool_call["args"] = {}  # type: ignore
+                    continue
+
                 try:
                     tool_call["args"] = json.loads(args_str)  # type: ignore
-                except (JSONDecodeError, ValueError):
+                except (JSONDecodeError, ValueError) as e:
                     # Fall back to json_repair for malformed JSON from API
-                    tool_call["args"] = json_repair.loads(args_str)  # type: ignore
+                    try:
+                        tool_call["args"] = json_repair.loads(args_str)  # type: ignore
+                    except Exception as repair_error:
+                        # If json_repair also fails, try to provide useful context
+                        raise JSONDecodeError(
+                            f"Failed to parse tool call arguments. "
+                            f"Original error: {e}. "
+                            f"json_repair error: {repair_error}. "
+                            f"Args string: {args_str[:100]}...",
+                            args_str,
+                            0,
+                        ) from repair_error
 
             last_chunk = chunks[-1]
 
