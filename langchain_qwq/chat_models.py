@@ -167,22 +167,9 @@ class ChatQwQ(_BaseChatQwen):
                             "reasoning_content"
                         ] = reasoning_content
 
-                    # Handle tool calls
+                    # Handle tool calls - store in additional_kwargs for _generate to process
                     if tool_calls := delta.get("tool_calls"):
-                        generation_chunk.message.tool_calls = []
-                        for tool_call in tool_calls:
-                            generation_chunk.message.tool_calls.append(
-                                {
-                                    "id": tool_call.get("id", ""),
-                                    "type": "function",  # type: ignore
-                                    "name": tool_call.get("function", {}).get(
-                                        "name", ""
-                                    ),
-                                    "args": tool_call.get("function", {}).get(
-                                        "arguments", ""
-                                    ),
-                                }
-                            )
+                        generation_chunk.message.additional_kwargs["tool_calls"] = tool_calls
 
         return generation_chunk
 
