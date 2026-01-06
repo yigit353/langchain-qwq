@@ -341,6 +341,33 @@ model = ChatQwen(model="qwen3-vl-plus")
 print(model.invoke(messages))
 ```
 
+## Middleware
+
+This library provides a middleware `DashScopeContextCacheMiddleware` that can be used to create display caching. 
+
+Example usage
+
+```python
+from langchain.agents import create_agent
+from langchain.tools import tool
+
+from langchain_qwq import ChatQwen
+from langchain_qwq.middleware import DashScopeContextCacheMiddleware
+
+
+@tool
+def get_weather(city: str) -> str:
+    """Get the current weather in a given city."""
+    return f"The weather in {city} is 20 degrees Celsius."
+
+
+model = ChatQwen(model="qwen3-max")
+
+agent = create_agent(
+    model, tools=[get_weather], middleware=[DashScopeContextCacheMiddleware()]
+)
+```
+
 ## Model Comparison
 
 | Feature           | ChatQwQ    | ChatQwen        |
