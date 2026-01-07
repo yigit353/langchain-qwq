@@ -179,3 +179,4 @@ cython_debug/
 # Claude Code
 CLAUDE.md
 .claude/
+SECURITY_FIX_HISTORY.md
