@@ -32,6 +32,78 @@ from .base import _BaseChatQwen, _DictOrPydantic, _DictOrPydanticClass
 original_add = AIMessageChunk.__add__
 
 
+def _patched_ai_message_chunk_add(
+    self: AIMessageChunk, other: Any
+) -> AIMessageChunk:
+    """Patched __add__ that fixes malformed JSON in tool_call_chunks.
+
+    QwQ API sometimes returns extra closing braces like '{"input": 3}}'.
+    This patch ensures that when chunks are combined, malformed JSON is
+    repaired using json_repair.
+
+    IMPORTANT: Only apply repair when args looks complete (ends with }).
+    During streaming, args are accumulated as fragments. Trying to repair
+    incomplete fragments corrupts them.
+    """
+    if not isinstance(result := original_add(self, other), AIMessageChunk):
+        return result  # type: ignore
+
+    # Fix malformed JSON in tool_call_chunks and recompute tool_calls
+    if result.tool_call_chunks:
+        fixed_chunks = []
+        needs_fix = False
+        for tc_chunk in result.tool_call_chunks:
+            if tc_chunk.get("args"):
+                args_str = tc_chunk["args"]
+                # Only try to fix if args looks complete (ends with })
+                # During streaming, args are fragments that shouldn't be touched
+                if not args_str.rstrip().endswith("}"):
+                    # Incomplete JSON fragment - don't touch it
+                    fixed_chunks.append(tc_chunk)
+                    continue
+
+                # Try to parse - if it fails, use json_repair
+                try:
+                    json.loads(args_str)
+                    # Valid JSON, keep as is
+                    fixed_chunks.append(tc_chunk)
+                except (JSONDecodeError, ValueError):
+                    try:
+                        # Use json_repair to fix malformed JSON
+                        fixed_args = json_repair.loads(args_str)
+                        if isinstance(fixed_args, dict):
+                            # Create a fixed chunk
+                            fixed_chunk = {
+                                **tc_chunk,
+                                "args": json.dumps(fixed_args),
+                            }
+                            fixed_chunks.append(fixed_chunk)
+                            needs_fix = True
+                        else:
+                            fixed_chunks.append(tc_chunk)
+                    except Exception:
+                        fixed_chunks.append(tc_chunk)
+            else:
+                fixed_chunks.append(tc_chunk)
+
+        # Recreate the result with fixed chunks to trigger init_tool_calls
+        if needs_fix:
+            result = AIMessageChunk(
+                content=result.content,
+                additional_kwargs=result.additional_kwargs,
+                response_metadata=result.response_metadata,
+                tool_call_chunks=fixed_chunks,
+                usage_metadata=result.usage_metadata,
+                id=result.id,
+            )
+
+    return result
+
+
+# Apply the patch at module load time
+AIMessageChunk.__add__ = _patched_ai_message_chunk_add  # type: ignore
+
+
 class ChatQwQ(_BaseChatQwen):
     """Qwen QwQ Thinking chat model integration to access models hosted in Qwen QwQ Thinking's API.
 
@@ -146,12 +218,39 @@ class ChatQwQ(_BaseChatQwen):
     def _support_tool_choice(self) -> bool:
         return False
 
+    def _should_stream(
+        self,
+        *,
+        async_api: bool,
+        run_manager: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> bool:
+        """Determine if streaming should be used.
+
+        When tools are present, we need to use our custom _generate method
+        which handles JSON repair for malformed tool call arguments from QwQ API.
+        The QwQ API sometimes returns malformed JSON like '{"input": 3}}' (extra brace)
+        which needs json_repair to fix. LangChain's default streaming accumulation
+        uses standard json.loads which fails on malformed JSON.
+        """
+        # If user explicitly requested streaming (e.g., via .stream() method),
+        # honor that request
+        if kwargs.get("stream"):
+            return True
+        # If tools are present, don't use the streaming path so our _generate
+        # with JSON repair logic is called instead
+        if kwargs.get("tools"):
+            return False
+        return super()._should_stream(
+            async_api=async_api, run_manager=run_manager, **kwargs
+        )
+
     def _convert_chunk_to_generation_chunk(
         self,
         chunk: dict,
         default_chunk_class: Type,
         base_generation_info: Optional[Dict],
-    ) -> Optional[ChatGenerationChunk]:
+        ) -> Optional[ChatGenerationChunk]:
         generation_chunk = super()._convert_chunk_to_generation_chunk(
             chunk,
             default_chunk_class,
@@ -167,9 +266,13 @@ class ChatQwQ(_BaseChatQwen):
                             "reasoning_content"
                         ] = reasoning_content
 
-                    # Handle tool calls - store in additional_kwargs for _generate to process
+                    # Store tool calls in additional_kwargs for _generate to process
+                    # Don't parse JSON here - arguments come in chunks and need to be
+                    # accumulated first before parsing
                     if tool_calls := delta.get("tool_calls"):
-                        generation_chunk.message.additional_kwargs["tool_calls"] = tool_calls
+                        generation_chunk.message.additional_kwargs["tool_calls"] = (
+                            tool_calls
+                        )
 
         return generation_chunk
 
@@ -180,70 +283,12 @@ class ChatQwQ(_BaseChatQwen):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        from langchain_core.messages import AIMessageChunk
-
-        # Helper function to check if a tool call is valid
-        def is_valid_tool_call(tc: ToolCall) -> bool:
-            # Filter out invalid/incomplete tool calls
-            if not tc:
-                return False
-
-            # Check that we have an ID
-            if not tc.get("id"):
-                return False
-
-            # Check that we have a name
-            if tc.get("name") is None and tc.get("type") == "function":
-                return False
-
-            # Check for valid args
-            args = tc.get("args")
-            if args is None or args == "}" or args == "{}}":
-                return False
-
-            return True
-
-        # Create a patched version that ensures tool_calls are preserved
-        def patched_add(self: AIMessageChunk, other: AIMessageChunk) -> AIMessageChunk:
-            if not isinstance(result := original_add(self, other), AIMessageChunk):
-                raise ValueError("Result is not an AIMessageChunk")
-
-            # Ensure tool_calls are preserved across additions
-            if hasattr(self, "tool_calls") and self.tool_calls:
-                if not hasattr(result, "tool_calls") or not result.tool_calls:
-                    result.tool_calls = [
-                        tc for tc in self.tool_calls if is_valid_tool_call(tc)
-                    ]
-
-            if hasattr(other, "tool_calls") and other.tool_calls:
-                if not hasattr(result, "tool_calls"):
-                    result.tool_calls = [
-                        tc for tc in other.tool_calls if is_valid_tool_call(tc)
-                    ]
-                else:
-                    # Merge unique tool calls, filtering out invalid ones
-                    existing_ids = {tc.get("id", "") for tc in result.tool_calls}
-                    for tc in other.tool_calls:
-                        if tc.get("id", "") not in existing_ids and is_valid_tool_call(
-                            tc
-                        ):
-                            result.tool_calls.append(tc)
-
-            return result
-
-        # Monkey patch the __add__ method
-        AIMessageChunk.__add__ = patched_add  # type: ignore
-
-        try:
-            kwargs["stream_options"] = {"include_usage": True}
-            # Original streaming
-            for chunk in super()._stream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            ):
-                yield chunk
-        finally:
-            # Restore the original method
-            AIMessageChunk.__add__ = original_add  # type: ignore
+        kwargs["stream_options"] = {"include_usage": True}
+        # JSON repair is handled by the module-level _patched_ai_message_chunk_add
+        for chunk in super()._stream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        ):
+            yield chunk
 
     def _generate(
         self,
@@ -268,11 +313,45 @@ class ChatQwQ(_BaseChatQwen):
                     "reasoning_content", ""
                 )
 
-                if chunk_tool_calls := chunk.message.additional_kwargs.get(
+                # Check tool_call_chunks from parent's processing (LangChain format)
+                # Priority: use tool_call_chunks if available, otherwise fall back to
+                # additional_kwargs["tool_calls"]
+                tc_chunks = (
+                    getattr(chunk.message, "tool_call_chunks", None) or []
+                )
+
+                if tc_chunks:
+                    # Use parent's parsed tool_call_chunks
+                    for tc_chunk in tc_chunks:
+                        index = tc_chunk.get("index", 0)
+
+                        # Initialize tool call entry if needed
+                        if index not in current_tool_calls:
+                            current_tool_calls[index] = {
+                                "id": "",
+                                "name": "",
+                                "args": "",
+                                "type": "function",
+                            }
+
+                        # Update tool call ID
+                        if tool_id := tc_chunk.get("id"):
+                            current_tool_calls[index]["id"] = tool_id
+
+                        # Update function name
+                        if name := tc_chunk.get("name"):
+                            current_tool_calls[index]["name"] = name
+
+                        # Accumulate arguments (comes as string fragments)
+                        if args := tc_chunk.get("args"):
+                            current_tool_calls[index]["args"] += args
+
+                elif chunk_tool_calls := chunk.message.additional_kwargs.get(
                     "tool_calls", []
                 ):
+                    # Fallback to raw tool_calls in additional_kwargs
                     for tool_call in chunk_tool_calls:
-                        index = tool_call.get("index", "")
+                        index = tool_call.get("index", 0)
 
                         # Initialize tool call entry if needed
                         if index not in current_tool_calls:
@@ -386,11 +465,45 @@ class ChatQwQ(_BaseChatQwen):
                     "reasoning_content", ""
                 )
 
-                if chunk_tool_calls := chunk.message.additional_kwargs.get(
+                # Check tool_call_chunks from parent's processing (LangChain format)
+                # Priority: use tool_call_chunks if available, otherwise fall back to
+                # additional_kwargs["tool_calls"]
+                tc_chunks = (
+                    getattr(chunk.message, "tool_call_chunks", None) or []
+                )
+
+                if tc_chunks:
+                    # Use parent's parsed tool_call_chunks
+                    for tc_chunk in tc_chunks:
+                        index = tc_chunk.get("index", 0)
+
+                        # Initialize tool call entry if needed
+                        if index not in current_tool_calls:
+                            current_tool_calls[index] = {
+                                "id": "",
+                                "name": "",
+                                "args": "",
+                                "type": "function",
+                            }
+
+                        # Update tool call ID
+                        if tool_id := tc_chunk.get("id"):
+                            current_tool_calls[index]["id"] = tool_id
+
+                        # Update function name
+                        if name := tc_chunk.get("name"):
+                            current_tool_calls[index]["name"] = name
+
+                        # Accumulate arguments (comes as string fragments)
+                        if args := tc_chunk.get("args"):
+                            current_tool_calls[index]["args"] += args
+
+                elif chunk_tool_calls := chunk.message.additional_kwargs.get(
                     "tool_calls", []
                 ):
+                    # Fallback to raw tool_calls in additional_kwargs
                     for tool_call in chunk_tool_calls:
-                        index = tool_call.get("index", "")
+                        index = tool_call.get("index", 0)
 
                         # Initialize tool call entry if needed
                         if index not in current_tool_calls:
@@ -485,70 +598,12 @@ class ChatQwQ(_BaseChatQwen):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        from langchain_core.messages import AIMessageChunk
-
-        # Helper function to check if a tool call is valid
-        def is_valid_tool_call(tc: ToolCall) -> bool:
-            # Filter out invalid/incomplete tool calls
-            if not tc:
-                return False
-
-            # Check that we have an ID
-            if not tc.get("id"):
-                return False
-
-            # Check that we have a name
-            if tc.get("name") is None and tc.get("type") == "function":
-                return False
-
-            # Check for valid args
-            args = tc.get("args")
-            if args is None or args == "}" or args == "{}}":
-                return False
-
-            return True
-
-        # Create a patched version that ensures tool_calls are preserved
-        def patched_add(self: AIMessageChunk, other: AIMessageChunk) -> AIMessageChunk:
-            if not isinstance(result := original_add(self, other), AIMessageChunk):
-                raise ValueError("Result is not an AIMessageChunk")
-
-            # Ensure tool_calls are preserved across additions
-            if hasattr(self, "tool_calls") and self.tool_calls:
-                if not hasattr(result, "tool_calls") or not result.tool_calls:
-                    result.tool_calls = [
-                        tc for tc in self.tool_calls if is_valid_tool_call(tc)
-                    ]
-
-            if hasattr(other, "tool_calls") and other.tool_calls:
-                if not hasattr(result, "tool_calls"):
-                    result.tool_calls = [
-                        tc for tc in other.tool_calls if is_valid_tool_call(tc)
-                    ]
-                else:
-                    # Merge unique tool calls, filtering out invalid ones
-                    existing_ids = {tc.get("id", "") for tc in result.tool_calls}
-                    for tc in other.tool_calls:
-                        if tc.get("id", "") not in existing_ids and is_valid_tool_call(
-                            tc
-                        ):
-                            result.tool_calls.append(tc)
-
-            return result
-
-        # Monkey patch the __add__ method
-        AIMessageChunk.__add__ = patched_add  # type: ignore
-
-        try:
-            kwargs["stream_options"] = {"include_usage": True}
-            # Original async streaming
-            async for chunk in super()._astream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            ):
-                yield chunk
-        finally:
-            # Restore the original method
-            AIMessageChunk.__add__ = original_add  # type: ignore
+        kwargs["stream_options"] = {"include_usage": True}
+        # JSON repair is handled by the module-level _patched_ai_message_chunk_add
+        async for chunk in super()._astream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        ):
+            yield chunk
 
     def with_structured_output(
         self,
