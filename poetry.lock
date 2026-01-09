@@ -1354,11 +1354,41 @@ tiktoken = ">=0.7.0,<1.0.0"
 
 [[package]]
 name = "langchain-tests"
+version = "0.3.21"
+description = "Standard tests for LangChain implementations"
+optional = false
+python-versions = ">=3.9"
+groups = ["test"]
+markers = "platform_python_implementation == \"PyPy\""
+files = [
+    {file = "langchain_tests-0.3.21-py3-none-any.whl", hash = "sha256:e2325f00ada73ac79e4da4b04002ffef0a87c7e7dbadf8cd54830950343925e0"},
+    {file = "langchain_tests-0.3.21.tar.gz", hash = "sha256:be7959a7961050fb3333d0946c55f08d707f7f8f9be1a5d8f55e8c43ea416295"},
+]
+
+[package.dependencies]
+httpx = ">=0.28.1,<1"
+langchain-core = ">=0.3.75,<2.0.0"
+numpy = [
+    {version = ">=1.26.2", markers = "python_version < \"3.13\""},
+    {version = ">=2.1.0", markers = "python_version >= \"3.13\""},
+]
+pytest = ">=7,<9"
+pytest-asyncio = ">=0.20,<2"
+pytest-benchmark = "*"
+pytest-codspeed = "*"
+pytest-recording = "*"
+pytest-socket = ">=0.7.0,<1"
+syrupy = ">=4,<5"
+vcrpy = ">=7.0"
+
+[[package]]
+name = "langchain-tests"
 version = "0.3.22"
 description = "Standard tests for LangChain implementations"
 optional = false
 python-versions = "<4.0.0,>=3.9.0"
 groups = ["test"]
+markers = "platform_python_implementation != \"PyPy\""
 files = [
     {file = "langchain_tests-0.3.22-py3-none-any.whl", hash = "sha256:b38173666236740343432ca1619fc7f742657649ff9e237ac89db5be921ee819"},
     {file = "langchain_tests-0.3.22.tar.gz", hash = "sha256:f4a57e5fdd9d4b0b30b7525f64cfaf959dc62f44b6825427abcce6bbbc83db72"},
@@ -1670,6 +1700,7 @@ description = "multidict implementation"
 optional = false
 python-versions = ">=3.9"
 groups = ["test"]
+markers = "platform_python_implementation != \"PyPy\""
 files = [
     {file = "multidict-6.7.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:9f474ad5acda359c8758c8accc22032c6abe6dc87a8be2440d097785e27a9349"},
     {file = "multidict-6.7.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:4b7a9db5a870f780220e931d0002bbfd88fb53aceb6293251e2c839415c1b20e"},
@@ -2517,6 +2548,7 @@ description = "Accelerated property cache"
 optional = false
 python-versions = ">=3.9"
 groups = ["test"]
+markers = "platform_python_implementation != \"PyPy\""
 files = [
     {file = "propcache-0.4.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:7c2d1fa3201efaf55d730400d945b5b3ab6e672e100ba0f9a409d950ab25d7db"},
     {file = "propcache-0.4.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:1eb2994229cc8ce7fe9b3db88f5465f5fd8651672840b2e426b88cdb1a30aac8"},
@@ -4106,40 +4138,21 @@ dev = ["flake8", "flake8-annotations", "flake8-bandit", "flake8-bugbear", "flake
 
 [[package]]
 name = "urllib3"
-version = "1.26.20"
-description = "HTTP library with thread-safe connection pooling, file post, and more."
-optional = false
-python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,>=2.7"
-groups = ["main", "docs", "test"]
-markers = "platform_python_implementation == \"PyPy\""
-files = [
-    {file = "urllib3-1.26.20-py2.py3-none-any.whl", hash = "sha256:0ed14ccfbf1c30a9072c7ca157e4319b70d65f623e91e7b32fadb2853431016e"},
-    {file = "urllib3-1.26.20.tar.gz", hash = "sha256:40c2dc0c681e47eb8f90e7e27bf6ff7df2e677421fd46756da1161c39ca70d32"},
-]
-
-[package.extras]
-brotli = ["brotli (==1.0.9)", "brotli (>=1.0.9)", "brotlicffi (>=0.8.0)", "brotlipy (>=0.6.0)"]
-secure = ["certifi", "cryptography (>=1.3.4)", "idna (>=2.0.0)", "ipaddress", "pyOpenSSL (>=0.14)", "urllib3-secure-extra"]
-socks = ["PySocks (>=1.5.6,!=1.5.7,<2.0)"]
-
-[[package]]
-name = "urllib3"
-version = "2.5.0"
+version = "2.6.3"
 description = "HTTP library with thread-safe connection pooling, file post, and more."
 optional = false
 python-versions = ">=3.9"
 groups = ["main", "docs", "test"]
-markers = "platform_python_implementation != \"PyPy\""
 files = [
-    {file = "urllib3-2.5.0-py3-none-any.whl", hash = "sha256:e6b01673c0fa6a13e374b50871808eb3bf7046c4b125b216f6bf1cc604cff0dc"},
-    {file = "urllib3-2.5.0.tar.gz", hash = "sha256:3fc47733c7e419d4bc3f6b3dc2b4f890bb743906a30d56ba4a5bfa4bbff92760"},
+    {file = "urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4"},
+    {file = "urllib3-2.6.3.tar.gz", hash = "sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed"},
 ]
 
 [package.extras]
-brotli = ["brotli (>=1.0.9)", "brotlicffi (>=0.8.0)"]
+brotli = ["brotli (>=1.2.0)", "brotlicffi (>=1.2.0.0)"]
 h2 = ["h2 (>=4,<5)"]
 socks = ["pysocks (>=1.5.6,!=1.5.7,<2.0)"]
-zstd = ["zstandard (>=0.18.0)"]
+zstd = ["backports-zstd (>=1.0.0)"]
 
 [[package]]
 name = "uuid-utils"
@@ -4180,6 +4193,7 @@ description = "Automatically mock your HTTP interactions to simplify and speed u
 optional = false
 python-versions = ">=3.9"
 groups = ["test"]
+markers = "platform_python_implementation != \"PyPy\""
 files = [
     {file = "vcrpy-7.0.0-py2.py3-none-any.whl", hash = "sha256:55791e26c18daa363435054d8b35bd41a4ac441b6676167635d1b37a71dbe124"},
     {file = "vcrpy-7.0.0.tar.gz", hash = "sha256:176391ad0425edde1680c5b20738ea3dc7fb942520a48d2993448050986b3a50"},
@@ -4187,15 +4201,32 @@ files = [
 
 [package.dependencies]
 PyYAML = "*"
-urllib3 = [
-    {version = "<2", markers = "platform_python_implementation == \"PyPy\""},
-    {version = "*", markers = "platform_python_implementation != \"PyPy\" and python_version >= \"3.10\""},
-]
+urllib3 = {version = "*", markers = "platform_python_implementation != \"PyPy\" and python_version >= \"3.10\""}
 wrapt = "*"
 yarl = "*"
 
 [package.extras]
 tests = ["Werkzeug (==2.0.3)", "aiohttp", "boto3", "httplib2", "httpx", "pytest", "pytest-aiohttp", "pytest-asyncio", "pytest-cov", "pytest-httpbin", "requests (>=2.22.0)", "tornado", "urllib3"]
+
+[[package]]
+name = "vcrpy"
+version = "8.1.1"
+description = "Automatically mock your HTTP interactions to simplify and speed up testing"
+optional = false
+python-versions = ">=3.10"
+groups = ["test"]
+markers = "platform_python_implementation == \"PyPy\""
+files = [
+    {file = "vcrpy-8.1.1-py3-none-any.whl", hash = "sha256:2d16f31ad56493efb6165182dd99767207031b0da3f68b18f975545ede8ac4b9"},
+    {file = "vcrpy-8.1.1.tar.gz", hash = "sha256:58e3053e33b423f3594031cb758c3f4d1df931307f1e67928e30cf352df7709f"},
+]
+
+[package.dependencies]
+PyYAML = "*"
+wrapt = "*"
+
+[package.extras]
+tests = ["aiohttp", "boto3", "cryptography", "httpbin", "httpcore", "httplib2", "httpx", "pycurl", "pytest", "pytest-aiohttp", "pytest-asyncio", "pytest-cov", "pytest-httpbin", "requests (>=2.22.0)", "tornado", "urllib3", "werkzeug (==2.0.3)"]
 
 [[package]]
 name = "watchdog"
@@ -4570,6 +4601,7 @@ description = "Yet another URL library"
 optional = false
 python-versions = ">=3.9"
 groups = ["test"]
+markers = "platform_python_implementation != \"PyPy\""
 files = [
     {file = "yarl-1.22.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:c7bd6683587567e5a49ee6e336e0612bec8329be1b7d4c8af5687dcdeb67ee1e"},
     {file = "yarl-1.22.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:5cdac20da754f3a723cceea5b3448e1a2074866406adeb4ef35b469d089adb8f"},
@@ -4830,4 +4862,4 @@ typing = []
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "36080b9c16a3d306588eec10ef8c17ddf21a4a40197593c5ab78144647092ac6"
+content-hash = "aa55bde21c9892d73ac4a5c92b0415efb76abe2384ad4e280fabaf86e3a8c21b"
