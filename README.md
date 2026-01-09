@@ -21,15 +21,16 @@ To install the package:
 pip install -U langchain-qwq
 ```
 
-If you want to install additional dependencies after cloning the repository:
+If you want to install additional dependencies for development:
 
 ```bash
-pip install -U langchain-qwq[docs]
 pip install -U langchain-qwq[test]
 pip install -U langchain-qwq[codespell]
 pip install -U langchain-qwq[lint]
 pip install -U langchain-qwq[typing]
 ```
+
+**Note**: The documentation notebooks in `docs/` can be viewed directly on GitHub or in VS Code without additional dependencies. To run them interactively, install Jupyter separately: `pip install jupyterlab`
 
 ## Environment Variables
 
