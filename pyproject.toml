@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "langchain-qwq"
-version = "0.3.2"
+version = "0.3.3"
 description = "An integration package connecting Qwen 3, QwQ and LangChain"
 authors = [
   "Yiğit Bekir Kaya, PhD <yigit353@gmail.com>",
@@ -39,6 +39,7 @@ disallow_untyped_defs = true
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
 langchain = "^1.0.5"
+langchain-core = ">=1.2.5"  # CVE fix: serialization injection vulnerability
 langchain-openai = "^1.0.2"
 json-repair = "^0.53.0"
 

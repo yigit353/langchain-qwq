@@ -1,5 +1,6 @@
 """Integration for QwQ and most Qwen series chat models"""
 
+import json
 from json import JSONDecodeError
 from typing import (
     Any,
@@ -12,13 +13,13 @@ from typing import (
     Type,
 )
 
-import json_repair as json
+import json_repair
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
 from langchain_core.language_models import LanguageModelInput
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolCall
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from pydantic import (
@@ -26,9 +27,6 @@ from pydantic import (
 )
 
 from .base import _BaseChatQwen, _DictOrPydantic, _DictOrPydanticClass
-
-# Store the original __add__ method
-original_add = AIMessageChunk.__add__
 
 
 class ChatQwQ(_BaseChatQwen):
@@ -151,12 +149,14 @@ class ChatQwQ(_BaseChatQwen):
         default_chunk_class: Type,
         base_generation_info: Optional[Dict],
     ) -> Optional[ChatGenerationChunk]:
+        # Let parent handle tool_call_chunks properly for streaming
         generation_chunk = super()._convert_chunk_to_generation_chunk(
             chunk,
             default_chunk_class,
             base_generation_info,
         )
 
+        # Only add reasoning_content, don't interfere with tool_calls
         if (choices := chunk.get("choices")) and generation_chunk:
             top = choices[0]
             if isinstance(generation_chunk.message, AIMessageChunk):
@@ -165,23 +165,6 @@ class ChatQwQ(_BaseChatQwen):
                         generation_chunk.message.additional_kwargs[
                             "reasoning_content"
                         ] = reasoning_content
-
-                    # Handle tool calls
-                    if tool_calls := delta.get("tool_calls"):
-                        generation_chunk.message.tool_calls = []
-                        for tool_call in tool_calls:
-                            generation_chunk.message.tool_calls.append(
-                                {
-                                    "id": tool_call.get("id", ""),
-                                    "type": "function",  # type: ignore
-                                    "name": tool_call.get("function", {}).get(
-                                        "name", ""
-                                    ),
-                                    "args": tool_call.get("function", {}).get(
-                                        "arguments", ""
-                                    ),
-                                }
-                            )
 
         return generation_chunk
 
@@ -192,70 +175,133 @@ class ChatQwQ(_BaseChatQwen):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        from langchain_core.messages import AIMessageChunk
-
-        # Helper function to check if a tool call is valid
-        def is_valid_tool_call(tc: ToolCall) -> bool:
-            # Filter out invalid/incomplete tool calls
-            if not tc:
-                return False
-
-            # Check that we have an ID
-            if not tc.get("id"):
-                return False
-
-            # Check that we have a name
-            if tc.get("name") is None and tc.get("type") == "function":
-                return False
-
-            # Check for valid args
-            args = tc.get("args")
-            if args is None or args == "}" or args == "{}}":
-                return False
-
-            return True
-
-        # Create a patched version that ensures tool_calls are preserved
-        def patched_add(self: AIMessageChunk, other: AIMessageChunk) -> AIMessageChunk:
-            if not isinstance(result := original_add(self, other), AIMessageChunk):
-                raise ValueError("Result is not an AIMessageChunk")
-
-            # Ensure tool_calls are preserved across additions
-            if hasattr(self, "tool_calls") and self.tool_calls:
-                if not hasattr(result, "tool_calls") or not result.tool_calls:
-                    result.tool_calls = [
-                        tc for tc in self.tool_calls if is_valid_tool_call(tc)
-                    ]
-
-            if hasattr(other, "tool_calls") and other.tool_calls:
-                if not hasattr(result, "tool_calls"):
-                    result.tool_calls = [
-                        tc for tc in other.tool_calls if is_valid_tool_call(tc)
-                    ]
-                else:
-                    # Merge unique tool calls, filtering out invalid ones
-                    existing_ids = {tc.get("id", "") for tc in result.tool_calls}
-                    for tc in other.tool_calls:
-                        if tc.get("id", "") not in existing_ids and is_valid_tool_call(
-                            tc
-                        ):
-                            result.tool_calls.append(tc)
-
-            return result
-
-        # Monkey patch the __add__ method
-        AIMessageChunk.__add__ = patched_add  # type: ignore
-
-        try:
-            kwargs["stream_options"] = {"include_usage": True}
-            # Original streaming
-            for chunk in super()._stream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
+        kwargs["stream_options"] = {"include_usage": True}
+        # Let parent handle streaming without modifications
+        for chunk in super()._stream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        ):
+            # Fix tool_call_chunks' args to prevent invalid_tool_calls
+            if (
+                hasattr(chunk.message, "tool_call_chunks")
+                and chunk.message.tool_call_chunks
             ):
-                yield chunk
-        finally:
-            # Restore the original method
-            AIMessageChunk.__add__ = original_add  # type: ignore
+                for tc_chunk in chunk.message.tool_call_chunks:
+                    if (
+                        "args" in tc_chunk
+                        and isinstance(tc_chunk["args"], str)
+                        and tc_chunk["args"]
+                    ):
+                        # Only try to fix if args looks complete (ends with })
+                        if tc_chunk["args"].rstrip().endswith("}"):
+                            try:
+                                json.loads(tc_chunk["args"])  # If valid, leave it
+                            except (JSONDecodeError, ValueError):
+                                try:
+                                    # Repair malformed JSON and convert back to string
+                                    parsed = json_repair.loads(tc_chunk["args"])
+                                    tc_chunk["args"] = json.dumps(parsed)
+                                except Exception:
+                                    pass  # Leave as-is if repair fails
+
+            # Post-process last chunk to also repair invalid_tool_calls
+            is_final = chunk.generation_info and chunk.generation_info.get(
+                "finish_reason"
+            )
+            if (
+                is_final
+                and hasattr(chunk.message, "invalid_tool_calls")
+                and chunk.message.invalid_tool_calls
+            ):
+                if not hasattr(chunk.message, "tool_calls"):
+                    chunk.message.tool_calls = []
+
+                for invalid_tc in chunk.message.invalid_tool_calls:
+                    args_value = invalid_tc.get("args")
+                    if isinstance(args_value, str):
+                        try:
+                            parsed_args = json.loads(args_value)
+                        except (JSONDecodeError, ValueError):
+                            try:
+                                parsed_args = json_repair.loads(args_value)
+                            except Exception:
+                                continue
+                    else:
+                        parsed_args = args_value if args_value else {}
+
+                    chunk.message.tool_calls.append(
+                        {
+                            "id": invalid_tc.get("id", ""),
+                            "name": invalid_tc.get("name", ""),
+                            "args": parsed_args,
+                            "type": "tool_call",
+                        }
+                    )
+
+                chunk.message.invalid_tool_calls = []
+
+            yield chunk
+
+    def generate(
+        self,
+        messages: List[List[BaseMessage]],
+        stop: Optional[List[str]] = None,
+        callbacks: Any = None,
+        *,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        run_name: Optional[str] = None,
+        run_id: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Override generate to repair invalid_tool_calls from malformed JSON."""
+        result = super().generate(
+            messages,
+            stop,
+            callbacks,
+            tags=tags,
+            metadata=metadata,
+            run_name=run_name,
+            run_id=run_id,
+            **kwargs,
+        )
+
+        # Post-process each generation to repair invalid_tool_calls
+        for generation_list in result.generations:
+            for generation in generation_list:
+                if (
+                    hasattr(generation.message, "invalid_tool_calls")
+                    and generation.message.invalid_tool_calls
+                ):
+                    # Repair invalid_tool_calls and add to tool_calls
+                    if not hasattr(generation.message, "tool_calls"):
+                        generation.message.tool_calls = []
+
+                    for invalid_tc in generation.message.invalid_tool_calls:
+                        args_value = invalid_tc.get("args")
+                        if isinstance(args_value, str):
+                            try:
+                                parsed_args = json.loads(args_value)
+                            except (JSONDecodeError, ValueError):
+                                try:
+                                    parsed_args = json_repair.loads(args_value)
+                                except Exception:
+                                    continue
+                        else:
+                            parsed_args = args_value if args_value else {}
+
+                        generation.message.tool_calls.append(
+                            {
+                                "id": invalid_tc.get("id", ""),
+                                "name": invalid_tc.get("name", ""),
+                                "args": parsed_args,
+                                "type": "tool_call",
+                            }
+                        )
+
+                    # Clear invalid_tool_calls after processing
+                    generation.message.invalid_tool_calls = []
+
+        return result
 
     def _generate(
         self,
@@ -265,59 +311,102 @@ class ChatQwQ(_BaseChatQwen):
         **kwargs: Any,
     ) -> ChatResult:
         try:
-            chunks = list(
-                self._stream(messages, stop=stop, run_manager=run_manager, **kwargs)
+            # Accumulate chunks to get the final message with all tool calls
+            stream = self._stream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
             )
-            content = ""
-            reasoning_content = ""
-            tool_calls = []
-            current_tool_calls = {}  # Track tool calls being built
+            first_chunk = next(stream)
+            accumulated = first_chunk
+            for chunk in stream:
+                accumulated += chunk  # type: ignore
 
-            for chunk in chunks:
-                if isinstance(chunk.message.content, str):
-                    content += chunk.message.content
-                reasoning_content += chunk.message.additional_kwargs.get(
-                    "reasoning_content", ""
-                )
+            final_message = accumulated.message
+            msg_content = final_message.content
+            content = msg_content if isinstance(msg_content, str) else ""
+            reasoning_content = final_message.additional_kwargs.get(
+                "reasoning_content", ""
+            )
 
-                if chunk_tool_calls := chunk.message.additional_kwargs.get(
-                    "tool_calls", []
-                ):
-                    for tool_call in chunk_tool_calls:
-                        index = tool_call.get("index", "")
+            # Build tool_calls from tool_call_chunks and repair invalid_tool_calls
+            tool_calls: List[Dict[str, Any]] = []
 
-                        # Initialize tool call entry if needed
-                        if index not in current_tool_calls:
-                            current_tool_calls[index] = {
-                                "id": "",
-                                "name": "",
-                                "args": "",
-                                "type": "function",
-                            }
+            has_chunks = (
+                hasattr(final_message, "tool_call_chunks")
+                and final_message.tool_call_chunks
+            )
+            if has_chunks:
+                # Group tool_call_chunks by index
+                chunks_by_index: Dict[int, Dict[str, Any]] = {}
+                for tc_chunk in final_message.tool_call_chunks:
+                    idx = tc_chunk.get("index", 0)
+                    if idx not in chunks_by_index:
+                        chunks_by_index[idx] = {
+                            "id": "",
+                            "name": "",
+                            "args": "",
+                        }
+                    if tc_chunk.get("id"):
+                        chunks_by_index[idx]["id"] = tc_chunk["id"]
+                    if tc_chunk.get("name"):
+                        chunks_by_index[idx]["name"] = tc_chunk["name"]
+                    if tc_chunk.get("args"):
+                        chunks_by_index[idx]["args"] += tc_chunk["args"]
 
-                        # Update tool call ID
-                        if tool_id := tool_call.get("id"):
-                            current_tool_calls[index]["id"] = tool_id
+                # Convert to tool_calls format with JSON repair
+                for tc_data in chunks_by_index.values():
+                    args_str = tc_data["args"]
+                    if not args_str:
+                        parsed_args = {}
+                    else:
+                        try:
+                            parsed_args = json.loads(args_str)
+                        except (JSONDecodeError, ValueError):
+                            # Fallback to json_repair for malformed JSON from API
+                            parsed_args = json_repair.loads(args_str)
 
-                        # Update function name and arguments
-                        if function := tool_call.get("function"):
-                            if name := function.get("name"):
-                                current_tool_calls[index]["name"] = name
-                            if args := function.get("arguments"):
-                                current_tool_calls[index]["args"] += args
+                    tool_calls.append(
+                        {
+                            "id": tc_data["id"],
+                            "name": tc_data["name"],
+                            "args": parsed_args,
+                            "type": "function",
+                        }
+                    )
 
-            # Convert accumulated tool calls to final format
-            tool_calls = list(current_tool_calls.values())
-            for tool_call in tool_calls:
-                tool_call["args"] = json.loads(tool_call["args"])  # type: ignore
+            # Also repair invalid_tool_calls that failed parent's JSON parsing
+            if (
+                hasattr(final_message, "invalid_tool_calls")
+                and final_message.invalid_tool_calls
+            ):
+                for invalid_tc in final_message.invalid_tool_calls:
+                    args_value = invalid_tc.get("args")
+                    if isinstance(args_value, str):
+                        # Try to repair the malformed JSON string
+                        try:
+                            parsed_args = json.loads(args_value)
+                        except (JSONDecodeError, ValueError):
+                            try:
+                                parsed_args = json_repair.loads(args_value)
+                            except Exception:
+                                # If repair fails, skip this tool call
+                                continue
+                    else:
+                        parsed_args = args_value if args_value else {}
 
-            last_chunk = chunks[-1]
+                    tool_calls.append(
+                        {
+                            "id": invalid_tc.get("id", ""),
+                            "name": invalid_tc.get("name", ""),
+                            "args": parsed_args,
+                            "type": "function",
+                        }
+                    )
 
-            # Extract usage info from the last chunk's generation_info
-            generation_info = last_chunk.generation_info or {}
-            # Extract usage metadata from chunk if available
-            if hasattr(last_chunk.message, "usage_metadata"):
-                usage_metadata = last_chunk.message.usage_metadata  # type: ignore
+            # Extract usage info from the accumulated chunk's generation_info
+            generation_info = accumulated.generation_info or {}
+            # Extract usage metadata from accumulated message if available
+            if hasattr(final_message, "usage_metadata"):
+                usage_metadata = final_message.usage_metadata  # type: ignore
             else:
                 usage_metadata = {}
 
@@ -358,62 +447,106 @@ class ChatQwQ(_BaseChatQwen):
         **kwargs: Any,
     ) -> ChatResult:
         try:
-            chunks = [
-                chunk
-                async for chunk in self._astream(
-                    messages, stop=stop, run_manager=run_manager, **kwargs
-                )
-            ]
-            content = ""
-            reasoning_content = ""
-            tool_calls = []
-            current_tool_calls = {}  # Track tool calls being built
+            # Accumulate chunks to get the final message with all tool calls
+            accumulated = None
+            async for chunk in self._astream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
+                if accumulated is None:
+                    accumulated = chunk
+                else:
+                    accumulated += chunk  # type: ignore
 
-            for chunk in chunks:
-                if isinstance(chunk.message.content, str):
-                    content += chunk.message.content
-                reasoning_content += chunk.message.additional_kwargs.get(
-                    "reasoning_content", ""
-                )
+            if accumulated is None:
+                raise ValueError("No chunks received from stream")
 
-                if chunk_tool_calls := chunk.message.additional_kwargs.get(
-                    "tool_calls", []
-                ):
-                    for tool_call in chunk_tool_calls:
-                        index = tool_call.get("index", "")
+            final_message = accumulated.message
+            msg_content = final_message.content
+            content = msg_content if isinstance(msg_content, str) else ""
+            reasoning_content = final_message.additional_kwargs.get(
+                "reasoning_content", ""
+            )
 
-                        # Initialize tool call entry if needed
-                        if index not in current_tool_calls:
-                            current_tool_calls[index] = {
-                                "id": "",
-                                "name": "",
-                                "args": "",
-                                "type": "function",
-                            }
+            # Build tool_calls from tool_call_chunks and repair invalid_tool_calls
+            tool_calls: List[Dict[str, Any]] = []
 
-                        # Update tool call ID
-                        if tool_id := tool_call.get("id"):
-                            current_tool_calls[index]["id"] = tool_id
+            has_chunks = (
+                hasattr(final_message, "tool_call_chunks")
+                and final_message.tool_call_chunks
+            )
+            if has_chunks:
+                # Group tool_call_chunks by index
+                chunks_by_index: Dict[int, Dict[str, Any]] = {}
+                for tc_chunk in final_message.tool_call_chunks:
+                    idx = tc_chunk.get("index", 0)
+                    if idx not in chunks_by_index:
+                        chunks_by_index[idx] = {
+                            "id": "",
+                            "name": "",
+                            "args": "",
+                        }
+                    if tc_chunk.get("id"):
+                        chunks_by_index[idx]["id"] = tc_chunk["id"]
+                    if tc_chunk.get("name"):
+                        chunks_by_index[idx]["name"] = tc_chunk["name"]
+                    if tc_chunk.get("args"):
+                        chunks_by_index[idx]["args"] += tc_chunk["args"]
 
-                        # Update function name and arguments
-                        if function := tool_call.get("function"):
-                            if name := function.get("name"):
-                                current_tool_calls[index]["name"] = name
-                            if args := function.get("arguments"):
-                                current_tool_calls[index]["args"] += args
+                # Convert to tool_calls format with JSON repair
+                for tc_data in chunks_by_index.values():
+                    args_str = tc_data["args"]
+                    if not args_str:
+                        parsed_args = {}
+                    else:
+                        try:
+                            parsed_args = json.loads(args_str)
+                        except (JSONDecodeError, ValueError):
+                            # Fallback to json_repair for malformed JSON from API
+                            parsed_args = json_repair.loads(args_str)
 
-            # Convert accumulated tool calls to final format
-            tool_calls = list(current_tool_calls.values())
-            for tool_call in tool_calls:
-                tool_call["args"] = json.loads(tool_call["args"])  # type: ignore
+                    tool_calls.append(
+                        {
+                            "id": tc_data["id"],
+                            "name": tc_data["name"],
+                            "args": parsed_args,
+                            "type": "function",
+                        }
+                    )
 
-            last_chunk = chunks[-1]
+            # Also repair invalid_tool_calls that failed parent's JSON parsing
+            if (
+                hasattr(final_message, "invalid_tool_calls")
+                and final_message.invalid_tool_calls
+            ):
+                for invalid_tc in final_message.invalid_tool_calls:
+                    args_value = invalid_tc.get("args")
+                    if isinstance(args_value, str):
+                        # Try to repair the malformed JSON string
+                        try:
+                            parsed_args = json.loads(args_value)
+                        except (JSONDecodeError, ValueError):
+                            try:
+                                parsed_args = json_repair.loads(args_value)
+                            except Exception:
+                                # If repair fails, skip this tool call
+                                continue
+                    else:
+                        parsed_args = args_value if args_value else {}
 
-            # Extract usage info from the last chunk's generation_info
-            generation_info = last_chunk.generation_info or {}
-            # Extract usage metadata from chunk if available
-            if hasattr(last_chunk.message, "usage_metadata"):
-                usage_metadata = last_chunk.message.usage_metadata  # type: ignore
+                    tool_calls.append(
+                        {
+                            "id": invalid_tc.get("id", ""),
+                            "name": invalid_tc.get("name", ""),
+                            "args": parsed_args,
+                            "type": "function",
+                        }
+                    )
+
+            # Extract usage info from the accumulated chunk's generation_info
+            generation_info = accumulated.generation_info or {}
+            # Extract usage metadata from accumulated message if available
+            if hasattr(final_message, "usage_metadata"):
+                usage_metadata = final_message.usage_metadata  # type: ignore
             else:
                 usage_metadata = {}
 
@@ -453,70 +586,71 @@ class ChatQwQ(_BaseChatQwen):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        from langchain_core.messages import AIMessageChunk
-
-        # Helper function to check if a tool call is valid
-        def is_valid_tool_call(tc: ToolCall) -> bool:
-            # Filter out invalid/incomplete tool calls
-            if not tc:
-                return False
-
-            # Check that we have an ID
-            if not tc.get("id"):
-                return False
-
-            # Check that we have a name
-            if tc.get("name") is None and tc.get("type") == "function":
-                return False
-
-            # Check for valid args
-            args = tc.get("args")
-            if args is None or args == "}" or args == "{}}":
-                return False
-
-            return True
-
-        # Create a patched version that ensures tool_calls are preserved
-        def patched_add(self: AIMessageChunk, other: AIMessageChunk) -> AIMessageChunk:
-            if not isinstance(result := original_add(self, other), AIMessageChunk):
-                raise ValueError("Result is not an AIMessageChunk")
-
-            # Ensure tool_calls are preserved across additions
-            if hasattr(self, "tool_calls") and self.tool_calls:
-                if not hasattr(result, "tool_calls") or not result.tool_calls:
-                    result.tool_calls = [
-                        tc for tc in self.tool_calls if is_valid_tool_call(tc)
-                    ]
-
-            if hasattr(other, "tool_calls") and other.tool_calls:
-                if not hasattr(result, "tool_calls"):
-                    result.tool_calls = [
-                        tc for tc in other.tool_calls if is_valid_tool_call(tc)
-                    ]
-                else:
-                    # Merge unique tool calls, filtering out invalid ones
-                    existing_ids = {tc.get("id", "") for tc in result.tool_calls}
-                    for tc in other.tool_calls:
-                        if tc.get("id", "") not in existing_ids and is_valid_tool_call(
-                            tc
-                        ):
-                            result.tool_calls.append(tc)
-
-            return result
-
-        # Monkey patch the __add__ method
-        AIMessageChunk.__add__ = patched_add  # type: ignore
-
-        try:
-            kwargs["stream_options"] = {"include_usage": True}
-            # Original async streaming
-            async for chunk in super()._astream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
+        kwargs["stream_options"] = {"include_usage": True}
+        # Let parent handle async streaming without modifications
+        async for chunk in super()._astream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        ):
+            # Fix tool_call_chunks' args to prevent invalid_tool_calls
+            if (
+                hasattr(chunk.message, "tool_call_chunks")
+                and chunk.message.tool_call_chunks
             ):
-                yield chunk
-        finally:
-            # Restore the original method
-            AIMessageChunk.__add__ = original_add  # type: ignore
+                for tc_chunk in chunk.message.tool_call_chunks:
+                    if (
+                        "args" in tc_chunk
+                        and isinstance(tc_chunk["args"], str)
+                        and tc_chunk["args"]
+                    ):
+                        # Only try to fix if args looks complete (ends with })
+                        if tc_chunk["args"].rstrip().endswith("}"):
+                            try:
+                                json.loads(tc_chunk["args"])  # If valid, leave it
+                            except (JSONDecodeError, ValueError):
+                                try:
+                                    # Repair malformed JSON and convert back to string
+                                    parsed = json_repair.loads(tc_chunk["args"])
+                                    tc_chunk["args"] = json.dumps(parsed)
+                                except Exception:
+                                    pass  # Leave as-is if repair fails
+
+            # Post-process last chunk to also repair invalid_tool_calls
+            is_final = chunk.generation_info and chunk.generation_info.get(
+                "finish_reason"
+            )
+            if (
+                is_final
+                and hasattr(chunk.message, "invalid_tool_calls")
+                and chunk.message.invalid_tool_calls
+            ):
+                if not hasattr(chunk.message, "tool_calls"):
+                    chunk.message.tool_calls = []
+
+                for invalid_tc in chunk.message.invalid_tool_calls:
+                    args_value = invalid_tc.get("args")
+                    if isinstance(args_value, str):
+                        try:
+                            parsed_args = json.loads(args_value)
+                        except (JSONDecodeError, ValueError):
+                            try:
+                                parsed_args = json_repair.loads(args_value)
+                            except Exception:
+                                continue
+                    else:
+                        parsed_args = args_value if args_value else {}
+
+                    chunk.message.tool_calls.append(
+                        {
+                            "id": invalid_tc.get("id", ""),
+                            "name": invalid_tc.get("name", ""),
+                            "args": parsed_args,
+                            "type": "tool_call",
+                        }
+                    )
+
+                chunk.message.invalid_tool_calls = []
+
+            yield chunk
 
     def with_structured_output(
         self,

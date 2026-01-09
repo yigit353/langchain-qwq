@@ -5,7 +5,10 @@ from langchain.agents.middleware.types import ModelCallResult
 
 
 class DashScopeContextCacheMiddleware(AgentMiddleware):
-    """Middleware for caching context in DashScope API.please refer to https://help.aliyun.com/zh/model-studio/context-cache for more details.
+    """Middleware for caching context in DashScope API.
+
+    Please refer to https://help.aliyun.com/zh/model-studio/context-cache
+    for more details.
 
     Example:
         ```python
