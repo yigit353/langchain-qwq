@@ -41,7 +41,7 @@ langchain = "^1.0.5"
 langchain-core = ">=1.2.5"  # CVE fix: serialization injection vulnerability
 langchain-openai = "^1.0.2"
 json-repair = "^0.53.0"
-urllib3 = ">=2.6.0"  # Security fix: CVE-2024-XXXXX (streaming API, decompression chain, redirect issues)
+urllib3 = ">=2.7.0"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "T201"]
