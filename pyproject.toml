@@ -44,6 +44,7 @@ json-repair = "^0.53.0"
 urllib3 = ">=2.7.0"
 orjson = ">=3.11.6"
 pygments = ">=2.20.0"
+requests = ">=2.33.0"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "T201"]
