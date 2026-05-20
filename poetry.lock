@@ -735,14 +735,14 @@ xxhash = ">=3.5.0"
 
 [[package]]
 name = "langgraph-checkpoint"
-version = "3.0.1"
+version = "4.1.0"
 description = "Library with base interfaces for LangGraph checkpoint savers."
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "langgraph_checkpoint-3.0.1-py3-none-any.whl", hash = "sha256:9b04a8d0edc0474ce4eaf30c5d731cee38f11ddff50a6177eead95b5c4e4220b"},
-    {file = "langgraph_checkpoint-3.0.1.tar.gz", hash = "sha256:59222f875f85186a22c494aedc65c4e985a3df27e696e5016ba0b98a5ed2cee0"},
+    {file = "langgraph_checkpoint-4.1.0-py3-none-any.whl", hash = "sha256:8bc2a0466a20c38b865ce6671b42093fd5c041133f32351cae4222e0eeaf7fb5"},
+    {file = "langgraph_checkpoint-4.1.0.tar.gz", hash = "sha256:e5bb304e30fc1363ac8fcb5f7dee5ca2185d77fe475b0d01de2c5f91324c2c21"},
 ]
 
 [package.dependencies]
@@ -3121,4 +3121,4 @@ typing = []
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "024f500c43ae8996d4f347c859af3fd83741c7a13d3aa9bc7abc5e5702c1a9cd"
+content-hash = "4af8e116f658d5036a9e43da4946e8c87b3a2164e7aaadebb063a639924fbe5c"
