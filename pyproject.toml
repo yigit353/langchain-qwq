@@ -39,7 +39,7 @@ disallow_untyped_defs = true
 python = ">=3.10,<4.0"
 langchain = "^1.0.5"
 langchain-core = ">=1.4.0"
-langchain-openai = "^1.0.2"
+langchain-openai = "^1.1.14"
 json-repair = "^0.53.0"
 urllib3 = ">=2.7.0"
 orjson = ">=3.11.6"
