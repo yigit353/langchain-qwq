@@ -247,6 +247,24 @@ reasoning = response.additional_kwargs.get("reasoning_content", "")
 print(f"Reasoning: {reasoning}")
 ```
 
+#### OpenAI-Compatible Servers
+
+Some OpenAI-compatible servers expect thinking control inside
+`chat_template_kwargs`:
+
+```python
+model = ChatQwen(
+    model="Qwen/Qwen3.6-35B-A3B",
+    base_url="http://localhost:8000/v1",
+    api_key="EMPTY",
+    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+)
+```
+
+Omit the separate `enable_thinking` constructor argument in this form. The nested
+value takes precedence if both forms are present. For structured output, select a
+method supported by the server, such as `method="json_mode"` where available.
+
 #### Control Thinking Length
 
 ```python
