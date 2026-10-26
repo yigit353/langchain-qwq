@@ -19,12 +19,15 @@ from langchain_core.callbacks import (
     CallbackManagerForLLMRun,
 )
 from langchain_core.language_models import LanguageModelInput
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.language_models.chat_models import (
+    agenerate_from_stream,
+    generate_from_stream,
+)
+from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.messages.tool import ToolCallChunk
 from langchain_core.outputs import (
-    ChatGeneration,
     ChatGenerationChunk,
     ChatResult,
-    LLMResult,
 )
 from langchain_core.runnables import Runnable
 from pydantic import (
@@ -32,6 +35,83 @@ from pydantic import (
 )
 
 from .base import _BaseChatQwen, _DictOrPydantic, _DictOrPydanticClass
+
+
+class _ToolCallStreamBuffer:
+    """Hold tool arguments until complete without delaying other stream data."""
+
+    def __init__(self) -> None:
+        self.pending: Optional[AIMessageChunk] = None
+
+    def _take_calls(self) -> List[ToolCallChunk]:
+        if self.pending is None:
+            return []
+        calls = self.pending.tool_call_chunks
+        self.pending = None
+        for call in calls:
+            arguments = call["args"]
+            if not arguments:
+                continue
+            try:
+                json.loads(arguments)
+            except JSONDecodeError:
+                try:
+                    repaired = json_repair.loads(arguments)
+                except Exception:
+                    continue
+                if isinstance(repaired, dict):
+                    call["args"] = json.dumps(repaired)
+        return calls
+
+    @staticmethod
+    def _with_calls(
+        message: AIMessageChunk, calls: List[ToolCallChunk]
+    ) -> AIMessageChunk:
+        data = message.model_dump(
+            exclude={"tool_call_chunks", "tool_calls", "invalid_tool_calls"}
+        )
+        data["additional_kwargs"].pop("tool_calls", None)
+        if calls:
+            data["additional_kwargs"]["tool_calls"] = [
+                {
+                    "index": call["index"],
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {"name": call["name"], "arguments": call["args"]},
+                }
+                for call in calls
+            ]
+        # Revalidate so raw, parsed and invalid tool-call fields stay consistent.
+        return AIMessageChunk(**data, tool_call_chunks=calls)
+
+    def process(self, chunk: ChatGenerationChunk) -> ChatGenerationChunk:
+        message = chunk.message
+        if not isinstance(message, AIMessageChunk):
+            return chunk
+        if message.tool_call_chunks:
+            tool_chunk = AIMessageChunk(
+                content="", tool_call_chunks=message.tool_call_chunks
+            )
+            self.pending = (
+                tool_chunk if self.pending is None else self.pending + tool_chunk
+            )
+        finished = (chunk.generation_info or {}).get("finish_reason") is not None
+        calls = self._take_calls() if finished else []
+        return chunk.model_copy(update={"message": self._with_calls(message, calls)})
+
+    def finish(self) -> Optional[ChatGenerationChunk]:
+        # A clean EOF can complete providers that omit finish_reason. Exceptions
+        # and cancellation do not call this, so partial calls are never emitted.
+        if self.pending is None:
+            return None
+        return ChatGenerationChunk(
+            message=self._with_calls(
+                AIMessageChunk(
+                    content="", response_metadata={"model_provider": "dashscope"}
+                ),
+                self._take_calls(),
+            )
+        )
 
 
 class ChatQwQ(_BaseChatQwen):
@@ -88,11 +168,11 @@ class ChatQwQ(_BaseChatQwen):
             llm.invoke(messages)
 
     Stream:
-        Tool-call argument fragments are forwarded unchanged during streaming.
-        If the complete arguments are malformed, inspect ``tool_call_chunks``
-        and ``invalid_tool_calls`` on the accumulated message. ``invoke`` and
-        ``ainvoke`` additionally attempt JSON repair after the response completes;
-        arguments that cannot be repaired remain in ``invalid_tool_calls``.
+        Text and reasoning are delivered as they arrive. Tool-call arguments
+        are buffered until completion, then malformed JSON objects are repaired
+        once. This applies to streaming and invocation, synchronously and
+        asynchronously. Arguments that cannot be repaired remain available in
+        ``tool_call_chunks`` and ``invalid_tool_calls``.
 
         .. code-block:: python
 
@@ -187,103 +267,21 @@ class ChatQwQ(_BaseChatQwen):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         kwargs["stream_options"] = {"include_usage": True}
-        # Tool arguments are JSON fragments; repair only after accumulation.
-        yield from super()._stream(
-            messages, stop=stop, run_manager=run_manager, **kwargs
-        )
-
-    def generate(
-        self,
-        messages: List[List[BaseMessage]],
-        stop: Optional[List[str]] = None,
-        callbacks: Any = None,
-        *,
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        run_name: Optional[str] = None,
-        run_id: Any = None,
-        **kwargs: Any,
-    ) -> LLMResult:
-        """Repair complete tool arguments after synchronous generation."""
-        result = super().generate(
-            messages,
-            stop,
-            callbacks,
-            tags=tags,
-            metadata=metadata,
-            run_name=run_name,
-            run_id=run_id,
-            **kwargs,
-        )
-
-        return self._repair_invalid_tool_calls(result)
-
-    async def agenerate(
-        self,
-        messages: List[List[BaseMessage]],
-        stop: Optional[List[str]] = None,
-        callbacks: Any = None,
-        *,
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        run_name: Optional[str] = None,
-        run_id: Any = None,
-        **kwargs: Any,
-    ) -> LLMResult:
-        """Repair complete tool arguments after asynchronous generation."""
-        result = await super().agenerate(
-            messages,
-            stop,
-            callbacks,
-            tags=tags,
-            metadata=metadata,
-            run_name=run_name,
-            run_id=run_id,
-            **kwargs,
-        )
-        return self._repair_invalid_tool_calls(result)
-
-    def _repair_invalid_tool_calls(self, result: LLMResult) -> LLMResult:
-        # Post-process each generation to repair invalid_tool_calls
-        for generation_list in result.generations:
-            for generation in generation_list:
-                if (
-                    isinstance(generation, ChatGeneration)
-                    and isinstance(generation.message, AIMessage)
-                    and generation.message.invalid_tool_calls
-                ):
-                    # Repair invalid_tool_calls and add to tool_calls
-                    unrepaired_calls = []
-                    for invalid_tc in generation.message.invalid_tool_calls:
-                        args_value = invalid_tc.get("args")
-                        if isinstance(args_value, str):
-                            try:
-                                parsed_args = json.loads(args_value)
-                            except (JSONDecodeError, ValueError):
-                                try:
-                                    parsed_args = json_repair.loads(args_value)
-                                except Exception:
-                                    unrepaired_calls.append(invalid_tc)
-                                    continue
-                        else:
-                            parsed_args = args_value if args_value else {}
-
-                        if not isinstance(parsed_args, dict):
-                            unrepaired_calls.append(invalid_tc)
-                            continue
-
-                        generation.message.tool_calls.append(
-                            {
-                                "id": invalid_tc.get("id", ""),
-                                "name": invalid_tc.get("name") or "",
-                                "args": parsed_args,
-                                "type": "tool_call",
-                            }
-                        )
-
-                    generation.message.invalid_tool_calls = unrepaired_calls
-
-        return result
+        buffer = _ToolCallStreamBuffer()
+        for chunk in super()._stream(messages, stop=stop, run_manager=None, **kwargs):
+            chunk = buffer.process(chunk)
+            if run_manager:
+                run_manager.on_llm_new_token(
+                    chunk.text,
+                    chunk=chunk,
+                    logprobs=(chunk.generation_info or {}).get("logprobs"),
+                )
+            yield chunk
+        final_chunk = buffer.finish()
+        if final_chunk is not None:
+            if run_manager:
+                run_manager.on_llm_new_token(final_chunk.text, chunk=final_chunk)
+            yield final_chunk
 
     def _generate(
         self,
@@ -292,130 +290,9 @@ class ChatQwQ(_BaseChatQwen):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        try:
-            # Accumulate chunks to get the final message with all tool calls
-            stream = self._stream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            )
-            first_chunk = next(stream)
-            accumulated = first_chunk
-            for chunk in stream:
-                accumulated += chunk  # type: ignore
-
-            final_message = accumulated.message
-            if not isinstance(final_message, AIMessageChunk):
-                raise TypeError("Expected an AI message from the chat model stream")
-            msg_content = final_message.content
-            content = msg_content if isinstance(msg_content, str) else ""
-            reasoning_content = final_message.additional_kwargs.get(
-                "reasoning_content", ""
-            )
-
-            # Build tool_calls from tool_call_chunks and repair invalid_tool_calls
-            tool_calls: List[Dict[str, Any]] = []
-
-            parsed_args: object
-            if final_message.tool_call_chunks:
-                # Group tool_call_chunks by index
-                chunks_by_index: Dict[int, Dict[str, Any]] = {}
-                for tc_chunk in final_message.tool_call_chunks:
-                    idx = tc_chunk.get("index") or 0
-                    if idx not in chunks_by_index:
-                        chunks_by_index[idx] = {
-                            "id": "",
-                            "name": "",
-                            "args": "",
-                        }
-                    if tc_chunk.get("id"):
-                        chunks_by_index[idx]["id"] = tc_chunk["id"]
-                    if tc_chunk.get("name"):
-                        chunks_by_index[idx]["name"] = tc_chunk["name"]
-                    if tc_chunk.get("args"):
-                        chunks_by_index[idx]["args"] += tc_chunk["args"]
-
-                # Convert to tool_calls format with JSON repair
-                for tc_data in chunks_by_index.values():
-                    args_str = tc_data["args"]
-                    if not args_str:
-                        parsed_args = {}
-                    else:
-                        try:
-                            parsed_args = json.loads(args_str)
-                        except (JSONDecodeError, ValueError):
-                            # Fallback to json_repair for malformed JSON from API
-                            parsed_args = json_repair.loads(args_str)
-
-                    if not isinstance(parsed_args, dict):
-                        raise ValueError("Tool call arguments must be a JSON object")
-
-                    tool_calls.append(
-                        {
-                            "id": tc_data["id"],
-                            "name": tc_data["name"],
-                            "args": parsed_args,
-                            "type": "function",
-                        }
-                    )
-
-            # Also repair invalid_tool_calls that failed parent's JSON parsing
-            elif final_message.invalid_tool_calls:
-                for invalid_tc in final_message.invalid_tool_calls:
-                    args_value = invalid_tc.get("args")
-                    if isinstance(args_value, str):
-                        # Try to repair the malformed JSON string
-                        try:
-                            parsed_args = json.loads(args_value)
-                        except (JSONDecodeError, ValueError):
-                            try:
-                                parsed_args = json_repair.loads(args_value)
-                            except Exception:
-                                # If repair fails, skip this tool call
-                                continue
-                    else:
-                        parsed_args = args_value if args_value else {}
-
-                    tool_calls.append(
-                        {
-                            "id": invalid_tc.get("id", ""),
-                            "name": invalid_tc.get("name", ""),
-                            "args": parsed_args,
-                            "type": "function",
-                        }
-                    )
-
-            # Extract usage info from the accumulated chunk's generation_info
-            generation_info = accumulated.generation_info or {}
-            # Extract usage metadata from accumulated message if available
-            usage_metadata = final_message.usage_metadata
-
-            return ChatResult(
-                generations=[
-                    ChatGeneration(
-                        generation_info=generation_info,
-                        message=AIMessage(
-                            content=content,
-                            additional_kwargs={"reasoning_content": reasoning_content},
-                            tool_calls=tool_calls,
-                            usage_metadata=usage_metadata,
-                            response_metadata={"model_name": self.model_name},
-                        ),
-                    )
-                ],
-                # Explicitly include usage at the ChatResult level if needed
-                llm_output=(
-                    {"usage": generation_info.get("usage")}
-                    if "usage" in generation_info
-                    else None
-                ),
-            )
-
-        except JSONDecodeError as e:
-            raise JSONDecodeError(
-                "Qwen QwQ Thingking API returned an invalid response. "
-                "Please check the API status and try again.",
-                e.doc,
-                e.pos,
-            ) from e
+        return generate_from_stream(
+            self._stream(messages, stop=stop, run_manager=run_manager, **kwargs)
+        )
 
     async def _agenerate(
         self,
@@ -424,134 +301,9 @@ class ChatQwQ(_BaseChatQwen):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        try:
-            # Accumulate chunks to get the final message with all tool calls
-            accumulated = None
-            async for chunk in self._astream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            ):
-                if accumulated is None:
-                    accumulated = chunk
-                else:
-                    accumulated += chunk  # type: ignore
-
-            if accumulated is None:
-                raise ValueError("No chunks received from stream")
-
-            final_message = accumulated.message
-            if not isinstance(final_message, AIMessageChunk):
-                raise TypeError("Expected an AI message from the chat model stream")
-            msg_content = final_message.content
-            content = msg_content if isinstance(msg_content, str) else ""
-            reasoning_content = final_message.additional_kwargs.get(
-                "reasoning_content", ""
-            )
-
-            # Build tool_calls from tool_call_chunks and repair invalid_tool_calls
-            tool_calls: List[Dict[str, Any]] = []
-
-            parsed_args: object
-            if final_message.tool_call_chunks:
-                # Group tool_call_chunks by index
-                chunks_by_index: Dict[int, Dict[str, Any]] = {}
-                for tc_chunk in final_message.tool_call_chunks:
-                    idx = tc_chunk.get("index") or 0
-                    if idx not in chunks_by_index:
-                        chunks_by_index[idx] = {
-                            "id": "",
-                            "name": "",
-                            "args": "",
-                        }
-                    if tc_chunk.get("id"):
-                        chunks_by_index[idx]["id"] = tc_chunk["id"]
-                    if tc_chunk.get("name"):
-                        chunks_by_index[idx]["name"] = tc_chunk["name"]
-                    if tc_chunk.get("args"):
-                        chunks_by_index[idx]["args"] += tc_chunk["args"]
-
-                # Convert to tool_calls format with JSON repair
-                for tc_data in chunks_by_index.values():
-                    args_str = tc_data["args"]
-                    if not args_str:
-                        parsed_args = {}
-                    else:
-                        try:
-                            parsed_args = json.loads(args_str)
-                        except (JSONDecodeError, ValueError):
-                            # Fallback to json_repair for malformed JSON from API
-                            parsed_args = json_repair.loads(args_str)
-
-                    if not isinstance(parsed_args, dict):
-                        raise ValueError("Tool call arguments must be a JSON object")
-
-                    tool_calls.append(
-                        {
-                            "id": tc_data["id"],
-                            "name": tc_data["name"],
-                            "args": parsed_args,
-                            "type": "function",
-                        }
-                    )
-
-            # Also repair invalid_tool_calls that failed parent's JSON parsing
-            elif final_message.invalid_tool_calls:
-                for invalid_tc in final_message.invalid_tool_calls:
-                    args_value = invalid_tc.get("args")
-                    if isinstance(args_value, str):
-                        # Try to repair the malformed JSON string
-                        try:
-                            parsed_args = json.loads(args_value)
-                        except (JSONDecodeError, ValueError):
-                            try:
-                                parsed_args = json_repair.loads(args_value)
-                            except Exception:
-                                # If repair fails, skip this tool call
-                                continue
-                    else:
-                        parsed_args = args_value if args_value else {}
-
-                    tool_calls.append(
-                        {
-                            "id": invalid_tc.get("id", ""),
-                            "name": invalid_tc.get("name", ""),
-                            "args": parsed_args,
-                            "type": "function",
-                        }
-                    )
-
-            # Extract usage info from the accumulated chunk's generation_info
-            generation_info = accumulated.generation_info or {}
-            # Extract usage metadata from accumulated message if available
-            usage_metadata = final_message.usage_metadata
-
-            return ChatResult(
-                generations=[
-                    ChatGeneration(
-                        generation_info=generation_info,
-                        message=AIMessage(
-                            content=content,
-                            additional_kwargs={"reasoning_content": reasoning_content},
-                            tool_calls=tool_calls,
-                            usage_metadata=usage_metadata,
-                            response_metadata={"model_name": self.model_name},
-                        ),
-                    )
-                ],
-                # Explicitly include usage at the ChatResult level if needed
-                llm_output=(
-                    {"usage": generation_info.get("usage")}
-                    if "usage" in generation_info
-                    else None
-                ),
-            )
-
-        except JSONDecodeError as e:
-            raise JSONDecodeError(
-                "Qwen QwQ Thingking API returned an invalid response. "
-                "Please check the API status and try again.",
-                e.doc,
-                e.pos,
-            ) from e
+        return await agenerate_from_stream(
+            self._astream(messages, stop=stop, run_manager=run_manager, **kwargs)
+        )
 
     async def _astream(
         self,
@@ -561,11 +313,23 @@ class ChatQwQ(_BaseChatQwen):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         kwargs["stream_options"] = {"include_usage": True}
-        # Tool arguments are JSON fragments; repair only after accumulation.
+        buffer = _ToolCallStreamBuffer()
         async for chunk in super()._astream(
-            messages, stop=stop, run_manager=run_manager, **kwargs
+            messages, stop=stop, run_manager=None, **kwargs
         ):
+            chunk = buffer.process(chunk)
+            if run_manager:
+                await run_manager.on_llm_new_token(
+                    chunk.text,
+                    chunk=chunk,
+                    logprobs=(chunk.generation_info or {}).get("logprobs"),
+                )
             yield chunk
+        final_chunk = buffer.finish()
+        if final_chunk is not None:
+            if run_manager:
+                await run_manager.on_llm_new_token(final_chunk.text, chunk=final_chunk)
+            yield final_chunk
 
     def with_structured_output(
         self,
