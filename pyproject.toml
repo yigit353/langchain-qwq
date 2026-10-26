@@ -47,7 +47,7 @@ orjson = ">=3.11.6"
 pygments = ">=2.20.0"
 requests = ">=2.33.0"
 langsmith = ">=0.8.0"
-langgraph = ">=1.0.10"
+langgraph = ">=1.1.5"
 langgraph-checkpoint = ">=4.0.0"
 
 [tool.ruff.lint]
