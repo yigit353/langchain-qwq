@@ -1,6 +1,7 @@
 """Integration for QwQ and most Qwen series chat models"""
 
 import json
+from collections.abc import Mapping
 from json import JSONDecodeError
 from typing import (
     Any,
@@ -823,7 +824,14 @@ class ChatQwen(_BaseChatQwen):
     @property
     def _default_params(self) -> Dict[str, Any]:
         """Get the default parameters for calling ChatQwen API."""
-        if self.enable_thinking is not None:
+        chat_template_kwargs = (
+            self.extra_body.get("chat_template_kwargs") if self.extra_body else None
+        )
+        has_nested_enable_thinking = (
+            isinstance(chat_template_kwargs, Mapping)
+            and "enable_thinking" in chat_template_kwargs
+        )
+        if self.enable_thinking is not None and not has_nested_enable_thinking:
             if self.extra_body is None:
                 self.extra_body = {"enable_thinking": self.enable_thinking}
             else:
