@@ -58,9 +58,12 @@ class TestChatQwQIntegration(BaseChatQwenIntegrationTests):
 
     @property
     def chat_model_params(self) -> dict:
-        # These should be parameters used to initialize your integration for testing
+        # DashScope retired qwq-plus on 2026-10-10. Exercise ChatQwQ's
+        # reasoning/streaming path with a supported model in thinking mode.
+        # https://www.alibabacloud.com/en/notice/model_studionotice_on_the_decommissioning_of_certain_historical_mainline_models_731
         return {
-            "model": "qwq-plus",
+            "model": "qwen-plus-latest",
+            "extra_body": {"enable_thinking": True},
         }
 
     def test_stream_qwq(self, model: BaseChatModel) -> None:
@@ -76,8 +79,7 @@ class TestChatQwQIntegration(BaseChatQwenIntegrationTests):
         assert isinstance(full, AIMessageChunk)
         assert full.content
         assert len(full.content_blocks) == 2  # type: ignore[attr-defined]
-        # Qwen QwQ models are forced to think, so content_blocks are 2,
-        # and the first one is reasoning_content.
+        # Thinking mode must produce reasoning followed by the answer.
         assert full.content_blocks[0]["type"] == "reasoning"  # type: ignore[attr-defined]
         assert full.content_blocks[1]["type"] == "text"  # type: ignore[attr-defined]
 
@@ -94,8 +96,7 @@ class TestChatQwQIntegration(BaseChatQwenIntegrationTests):
         assert isinstance(full, AIMessageChunk)
         assert full.content
         assert len(full.content_blocks) == 2  # type: ignore[attr-defined]
-        # Qwen QwQ models are forced to think, so content_blocks are 2,
-        # and the first one is reasoning_content.
+        # Thinking mode must produce reasoning followed by the answer.
         assert full.content_blocks[0]["type"] == "reasoning"  # type: ignore[attr-defined]
         assert full.content_blocks[1]["type"] == "text"  # type: ignore[attr-defined]
 
