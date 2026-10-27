@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "langchain-qwq"
-version = "0.3.5"
+version = "0.3.6"
 description = "An integration package connecting Qwen 3, QwQ and LangChain"
 authors = [
   "Yiğit Bekir Kaya, PhD <yigit353@gmail.com>",
@@ -49,6 +49,7 @@ requests = ">=2.33.0"
 langsmith = ">=0.8.0"
 langgraph = ">=1.1.5"
 langgraph-checkpoint = ">=4.0.0"
+typing-extensions = ">=4.0.0"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "T201"]
