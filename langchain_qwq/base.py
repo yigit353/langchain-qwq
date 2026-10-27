@@ -5,7 +5,6 @@ from typing import (
     List,
     Literal,
     Optional,
-    Self,
     Sequence,
     Type,
     TypeVar,
@@ -22,6 +21,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.utils import from_env, secret_from_env
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from typing_extensions import Self
 
 _BM = TypeVar("_BM", bound=BaseModel)
 _DictOrPydanticClass = Union[Dict[str, Any], Type[_BM], Type]
